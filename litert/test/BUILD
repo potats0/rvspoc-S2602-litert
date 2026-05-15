@@ -430,3 +430,15 @@ exports_files(
         "testdata/torchaudio_conformer.tflite",
     ],
 )
+
+cc_binary(
+    name = "rvv_test_bin",
+    srcs = ["rvv_test.cc"],
+    copts = ["-march=rv64gcv"], 
+)
+
+cc_test(
+    name = "rvv_test",
+    srcs = ["rvv_test.cc"],
+    copts = ["-march=rv64gcv"],
+)

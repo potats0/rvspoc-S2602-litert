@@ -483,6 +483,13 @@ build:elinux_armhf --cpu=armhf
 build:elinux_armhf --platforms=@org_tensorflow//tensorflow/tools/toolchains/linux:linux_armhf
 build:elinux_armhf --copt -mfp16-format=ieee
 
+build:riscv64 --incompatible_enable_cc_toolchain_resolution
+build:riscv64 --platforms=//platforms:riscv64_linux
+build:riscv64 --extra_toolchains=//third_party/toolchains/riscv64:riscv64_toolchain
+build:riscv64 --cpu=riscv64
+
+test:riscv64 --run_under="qemu-riscv64 -L /usr/riscv64-linux-gnu -cpu max"
+
 # Config-specific options should come above this line.
 
 # Load rc file written by ./configure.
