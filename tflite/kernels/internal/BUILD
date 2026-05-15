@@ -1261,6 +1261,7 @@ cc_library(
         "optimized/cpu_check.h",
         "optimized/neon_check.h",
         "optimized/sse_check.h",
+        "optimized/riscv_check.h",
     ],
     compatible_with = get_compatible_with_portable(),
     copts = tflite_copts(),

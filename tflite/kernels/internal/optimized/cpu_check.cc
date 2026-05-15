@@ -37,11 +37,26 @@ bool DetectDotprodByLinuxAuxvMethod() {
 }
 #endif
 
+#if defined __linux__ && defined(__riscv) && (__riscv_xlen == 64)
+bool DetectRISCVFP16ByLinuxAuxvMethod() {
+  //TODO(RVV): 实现检测函数
+  return true;
+}
+#endif
+
 }  // namespace
 
 bool DetectArmNeonDotprod() {
 #if defined __linux__ && defined __aarch64__
   return DetectDotprodByLinuxAuxvMethod();
+#else
+  return false;
+#endif
+}
+
+bool DetectRISCVFP16() {
+#if defined (__linux__) && defined(__riscv) && (__riscv_xlen == 64)
+  return DetectRISCVFP16ByLinuxAuxvMethod();
 #else
   return false;
 #endif
