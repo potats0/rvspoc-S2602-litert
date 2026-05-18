@@ -27,7 +27,7 @@ namespace tensor_utils {
 void MatrixBatchVectorMultiplyAccumulate(const float* matrix, int m_rows,
                                          int m_cols, const float* vector,
                                          int n_batch, float* result) {
-  PORTABLE_RISCV(MatrixBatchVectorMultiplyAccumulate, matrix, m_rows, m_cols,
+  RISCV_OR_PORTABLE(MatrixBatchVectorMultiplyAccumulate, matrix, m_rows, m_cols,
                    vector, n_batch, result);
 }
 
@@ -37,7 +37,7 @@ void MatrixBatchVectorMultiplyAccumulate(const int8_t* __restrict__ matrix,
                                          const float* scaling_factors,
                                          int n_batch,
                                          float* __restrict__ result) {
-  PORTABLE_RISCV(MatrixBatchVectorMultiplyAccumulate, matrix, m_rows, m_cols,
+  RISCV_OR_PORTABLE(MatrixBatchVectorMultiplyAccumulate, matrix, m_rows, m_cols,
                    vectors, scaling_factors, n_batch, result);
 }
 
@@ -48,7 +48,7 @@ void MatrixBatchVectorMultiplyAccumulate(const int8_t* __restrict__ matrix,
                                          int n_batch, int32_t* scratch,
                                          float* __restrict__ result,
                                          CpuBackendContext* context) {
-  PORTABLE_RISCV(MatrixBatchVectorMultiplyAccumulate, matrix, m_rows, m_cols,
+  RISCV_OR_PORTABLE(MatrixBatchVectorMultiplyAccumulate, matrix, m_rows, m_cols,
                    vectors, scaling_factors, n_batch, result);
 }
 
@@ -58,7 +58,7 @@ void MatrixBatchVectorMultiplyAccumulate(
     int n_batch, float* __restrict__ result, const float* per_channel_scale,
     const int32_t* input_offset, int32_t* scratch, int32_t* row_sums,
     bool* compute_row_sums, CpuBackendContext* context) {
-  PORTABLE_RISCV(MatrixBatchVectorMultiplyAccumulate, matrix, m_rows, m_cols,
+  RISCV_OR_PORTABLE(MatrixBatchVectorMultiplyAccumulate, matrix, m_rows, m_cols,
                    vectors, scaling_factors, n_batch, result, per_channel_scale,
                    input_offset, scratch, row_sums, compute_row_sums, context);
 }

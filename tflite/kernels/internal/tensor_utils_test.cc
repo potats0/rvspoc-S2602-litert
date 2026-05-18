@@ -412,6 +412,36 @@ TEST(uKernels, QuantMatrixBatchVectorMultiplyAccumulate8x8_16Test) {
   EXPECT_THAT(output, testing::ElementsAreArray(expected_output));
 }
 
+TEST(uKernels, MatrixBatchVectorMultiplyAccumulateInt8Test) {
+  const std::vector<int8_t> input = {1, 2, 3, 4};
+
+  const std::vector<int8_t> weights = {
+      10,  20,  30,  40,   // 第 0 行
+      -5,  -10, 15,  20    // 第 1 行
+  };
+
+  const std::vector<float> scaling_factors = {1.5f};
+
+  std::vector<float> output(2, 0.0f);
+
+  MatrixBatchVectorMultiplyAccumulate(
+      weights.data(), /*m_rows=*/2, /*m_cols=*/4, input.data(),
+      scaling_factors.data(), /*n_batch=*/1, output.data());
+
+  //
+  // 行 0 点积 = (1 * 10) + (2 * 20) + (3 * 30) + (4 * 40)
+  //          = 10 + 40 + 90 + 160 = 300
+  // 行 0 输出 = 300 * 1.5f = 450.0f
+  //
+  // 行 1 点积 = (1 * -5) + (2 * -10) + (3 * 15) + (4 * 20)
+  //          = -5 - 20 + 45 + 80 = 100
+  // 行 1 输出 = 100 * 1.5f = 150.0f
+  //
+  const std::vector<float> expected_output = {450.0f, 150.0f};
+
+  EXPECT_THAT(output, testing::ElementsAreArray(expected_output));
+}
+
 TEST(uKernels, HybridMatrixBatchVectorMultiplyAccumulate8x8_16Test) {
   CpuBackendContext context;
   const std::vector<int8_t> input = {
