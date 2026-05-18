@@ -210,6 +210,84 @@ void RISCVMatrixBatchVectorMultiplyAccumulate(
   }
 }
 
+bool RISCVIsZeroVector(const int8_t *vector, int v_size) {
+  int c = 0;
+  int elements_left = v_size;
+
+  while (elements_left > 0) {
+    size_t vl = __riscv_vsetvl_e8m8(elements_left);
+
+    vint8m8_t v_data = __riscv_vle8_v_i8m8(vector + c, vl);
+    vbool1_t v_mask = __riscv_vmsne_vx_i8m8_b1(v_data, 0, vl);
+    long active_count = __riscv_vcpop_m_b1(v_mask, vl);
+
+    if (active_count > 0) {
+      return false;
+    }
+
+    elements_left -= vl;
+    c += vl;
+  }
+
+  return true;
+}
+
+bool RISCVIsZeroVector(const float *vector, int v_size) {
+  int c = 0;
+  int elements_left = v_size;
+
+  while (elements_left > 0) {
+    size_t vl = __riscv_vsetvl_e32m8(elements_left);
+
+    vfloat32m8_t v_data = __riscv_vle32_v_f32m8(vector + c, vl);
+    vbool4_t v_mask = __riscv_vmfne_vf_f32m8_b4(v_data, 0.0f, vl);
+    long active_count = __riscv_vcpop_m_b4(v_mask, vl);
+
+    if (active_count > 0) {
+      return false;
+    }
+
+    elements_left -= vl;
+    c += vl;
+  }
+
+  return true;
+}
+
+void RISCVSub1Vector(const int16_t* vector, int v_size, int16_t* result) {
+  int c = 0;
+  int elements_left = v_size;
+
+  while (elements_left > 0) {
+    size_t vl = __riscv_vsetvl_e16m8(elements_left);
+
+    vint16m8_t v_data = __riscv_vle16_v_i16m8(vector + c, vl);
+    vint16m8_t v_res = __riscv_vrsub_vx_i16m8(v_data, 32767, vl);
+
+    __riscv_vse16_v_i16m8(result + c, v_res, vl);
+
+    elements_left -= vl;
+    c += vl;
+  }
+}
+
+void RISCVSub1VectorFloat(const float* vector, int v_size, float* result) {
+  int c = 0;
+  int elements_left = v_size;
+
+  while (elements_left > 0) {
+    size_t vl = __riscv_vsetvl_e32m8(elements_left);
+
+    vfloat32m8_t v_data = __riscv_vle32_v_f32m8(vector + c, vl);
+    vfloat32m8_t v_res = __riscv_vfrsub_vf_f32m8(v_data, 1.0f, vl);
+
+    __riscv_vse32_v_f32m8(result + c, v_res, vl);
+
+    elements_left -= vl;
+    c += vl;
+  }
+}
+
 } // namespace tensor_utils
 } // namespace tflite
 

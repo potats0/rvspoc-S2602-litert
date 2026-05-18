@@ -247,21 +247,21 @@ float VectorVectorDotProduct(const float* vector1, const float* vector2,
 }
 
 void Sub1Vector(const float* vector, int v_size, float* result) {
-  PORTABLE_RISCV(Sub1Vector, vector, v_size, result);
+  RISCV_OR_PORTABLE(Sub1Vector, vector, v_size, result);
 }
 
 void Sub1Vector(const int16_t* vector, int v_size, int16_t* result) {
-  PORTABLE_RISCV(Sub1Vector, vector, v_size, result);
+  RISCV_OR_PORTABLE(Sub1Vector, vector, v_size, result);
 }
 
 // Check if all entries of a vector are zero for float.
 bool IsZeroVector(const float* vector, int v_size) {
-  return PORTABLE_RISCV(IsZeroVector, vector, v_size);
+  return RISCV_OR_PORTABLE(IsZeroVector, vector, v_size);
 }
 
 // Check if all entries of a vector are zero for int8.
 bool IsZeroVector(const int8_t* vector, int v_size) {
-  return PORTABLE_RISCV(IsZeroVector, vector, v_size);
+  return RISCV_OR_PORTABLE(IsZeroVector, vector, v_size);
 }
 
 void VectorScalarMultiply(const int8_t* vector, int v_size, float scale,
