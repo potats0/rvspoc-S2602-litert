@@ -172,6 +172,20 @@ config_setting(
     ],
 )
 
+config_setting(
+    name = "riscv64_concrete",
+    constraint_values = [
+        "@platforms//cpu:riscv64", 
+    ],
+)
+
+selects.config_setting_group(
+    name = "riscv64_any",
+    match_any = [
+        ":riscv64_concrete",
+    ],
+)
+
 cc_library(
     name = "common",
     srcs = ["common.cc"],
@@ -846,6 +860,28 @@ cc_library(
 )
 
 cc_library(
+    name = "riscv_tensor_utils",
+    srcs = [
+        "optimized/riscv_tensor_utils.cc",
+    ],
+    hdrs = [
+        "optimized/riscv_tensor_utils.h",
+        "optimized/riscv_tensor_utils_impl.h",
+    ],
+    compatible_with = get_compatible_with_portable(),
+    copts = tflite_copts() ,
+    deps = [
+        ":common",
+        ":compatibility",
+        ":cppmath",
+        ":cpu_check",
+        ":portable_tensor_utils",
+        "//tflite/kernels:cpu_backend_context",
+        "//tflite/kernels:cpu_backend_gemm",
+    ],
+)
+
+cc_library(
     name = "sse_tensor_utils",
     srcs = [
         "compatibility.h",
@@ -954,6 +990,11 @@ cc_library(
             ":sse_tensor_utils",
         ],
         (
+            ":riscv64_any",  
+        ): [
+            ":riscv_tensor_utils",  
+        ],
+        (
             "//tflite:tf_lite_static_memory",
             "//conditions:default",
         ): [":portable_tensor_utils"],
@@ -988,6 +1029,11 @@ cc_library(
         ): [
             ":portable_tensor_utils",  # If SSSE3 isn't available, we fall back to portable
             ":sse_tensor_utils",
+        ],
+        (
+            ":riscv64_any",  
+        ): [
+            ":riscv_tensor_utils",  
         ],
         (
             "//tflite:tf_lite_static_memory",

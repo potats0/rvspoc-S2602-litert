@@ -25,6 +25,7 @@ limitations under the License.
 #ifdef USE_RISCV
 // Always use RISCV code
 #define RISCV_OR_PORTABLE(funcname, ...) RISCV##funcname(__VA_ARGS__)
+#define PORTABLE_RISCV(funcname, ...) Portable##funcname(__VA_ARGS__)
 
 #else
 // No RISCV available: Use Portable code
