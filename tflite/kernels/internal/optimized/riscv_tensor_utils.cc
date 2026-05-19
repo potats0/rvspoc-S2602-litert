@@ -254,7 +254,7 @@ bool RISCVIsZeroVector(const float *vector, int v_size) {
   return true;
 }
 
-void RISCVSub1Vector(const int16_t* vector, int v_size, int16_t* result) {
+void RISCVSub1Vector(const int16_t *vector, int v_size, int16_t *result) {
   int c = 0;
   int elements_left = v_size;
 
@@ -271,7 +271,7 @@ void RISCVSub1Vector(const int16_t* vector, int v_size, int16_t* result) {
   }
 }
 
-void RISCVSub1VectorFloat(const float* vector, int v_size, float* result) {
+void RISCVSub1VectorFloat(const float *vector, int v_size, float *result) {
   int c = 0;
   int elements_left = v_size;
 
@@ -288,6 +288,52 @@ void RISCVSub1VectorFloat(const float* vector, int v_size, float* result) {
   }
 }
 
+void RISCVSparseMatrixBatchVectorMultiplyAccumulate1x4(
+    const float *__restrict__ matrix, const int32_t *__restrict__ segments,
+    const int32_t *__restrict__ indices, int m_rows, int m_cols,
+    const float *__restrict__ vector, int n_batch, float *__restrict__ result) {
+  const int kBlockSize = 4;
+
+  const float *matrix_ptr = matrix;
+
+  for (int batch = 0; batch < n_batch; batch++) {
+    const float *vector_in_batch = vector + batch * m_cols;
+
+    for (int row = 0; row < m_rows; row++) {
+      size_t vlmax = __riscv_vsetvlmax_e32m1();
+      vfloat32m1_t v_dotprod = __riscv_vfmv_v_f_f32m1(0.0f, vlmax);
+
+      int start_block = segments[row];
+      int end_block = segments[row + 1];
+
+      for (int i = start_block; i < end_block; i++) {
+        const int block_start_index = indices[i] * kBlockSize;
+
+        const float *vector_block_in_batch_ptr =
+            vector_in_batch + block_start_index;
+
+        size_t vl = __riscv_vsetvl_e32m1(kBlockSize);
+
+        vfloat32m1_t v_vec =
+            __riscv_vle32_v_f32m1(vector_block_in_batch_ptr, vl);
+        vfloat32m1_t v_mat = __riscv_vle32_v_f32m1(matrix_ptr, vl);
+
+        matrix_ptr += kBlockSize;
+
+        v_dotprod = __riscv_vfmacc_vv_f32m1(v_dotprod, v_mat, v_vec, vl);
+      }
+
+      float dot_prod_scalar = 0.0f;
+
+      vfloat32m1_t v_res_scalar = __riscv_vfmv_v_f_f32m1(0.0f, vlmax);
+      v_res_scalar =
+          __riscv_vfredusum_vs_f32m1_f32m1(v_dotprod, v_res_scalar, vlmax);
+      dot_prod_scalar = __riscv_vfmv_f_s_f32m1_f32(v_res_scalar);
+
+      result[batch * m_rows + row] += dot_prod_scalar;
+    }
+  }
+}
 } // namespace tensor_utils
 } // namespace tflite
 

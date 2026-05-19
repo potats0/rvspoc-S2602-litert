@@ -67,7 +67,7 @@ void SparseMatrixBatchVectorMultiplyAccumulate1x4(
     const float* __restrict__ matrix, const int32_t* __restrict__ segments,
     const int32_t* __restrict__ indices, int m_rows, int m_cols,
     const float* __restrict__ vector, int n_batch, float* __restrict__ result) {
-  PORTABLE_RISCV(SparseMatrixBatchVectorMultiplyAccumulate1x4, matrix,
+  RISCV_OR_PORTABLE(SparseMatrixBatchVectorMultiplyAccumulate1x4, matrix,
                    segments, indices, m_rows, m_cols, vector, n_batch, result);
 }
 
