@@ -348,8 +348,7 @@ void RISCVSparseMatrixBatchVectorMultiplyAccumulate(
     const uint8_t *ledger_ptr = ledger;
 
     for (int row = 0; row < m_rows; row++) {
-      size_t vlmax =
-          __riscv_vsetvlmax_e32m4();
+      size_t vlmax = __riscv_vsetvlmax_e32m4();
       vfloat32m4_t v_dotprod = __riscv_vfmv_v_f_f32m4(0.0f, vlmax);
 
       int num_nonzero_blocks = *ledger_ptr++;
@@ -384,6 +383,65 @@ void RISCVSparseMatrixBatchVectorMultiplyAccumulate(
       dot_prod_scalar = __riscv_vfmv_f_s_f32m1_f32(v_res_scalar);
       result[batch * m_rows + row] += dot_prod_scalar;
     }
+  }
+}
+void RISCVCwiseMul(const int16_t *input_1, const int16_t *input_2, int n_batch,
+                   int n_input, int shift, int16_t *output) {
+  int total_elements = n_batch * n_input;
+
+  int index = 0;
+  while (index < total_elements) {
+    size_t vl = __riscv_vsetvl_e16m4(total_elements - index);
+
+    vint16m4_t va = __riscv_vle16_v_i16m4(input_1 + index, vl);
+    vint16m4_t vb = __riscv_vle16_v_i16m4(input_2 + index, vl);
+    vint32m8_t v_value = __riscv_vwmul_vv_i32m8(va, vb, vl);
+    vint16m4_t v_out =
+        __riscv_vnclip_wx_i16m4(v_value, shift, __RISCV_VXRM_RNU, vl);
+
+    __riscv_vse16_v_i16m4(output + index, v_out, vl);
+
+    index += vl;
+  }
+}
+
+void RISCVCwiseMul(const int16_t *input_1, const int16_t *input_2,
+                   int32_t multiplier, int32_t shift, int32_t n_batch,
+                   int32_t n_input, int32_t output_zp, int8_t *output) {
+  int total_elements = n_batch * n_input;
+  int index = 0;
+  int left_shift = shift > 0 ? shift : 0;
+  int right_shift = shift > 0 ? 0 : -shift;
+
+  while (index < total_elements) {
+    size_t vl = __riscv_vsetvl_e16m4(total_elements - index);
+
+    vint16m4_t va = __riscv_vle16_v_i16m4(input_1 + index, vl);
+    vint16m4_t vb = __riscv_vle16_v_i16m4(input_2 + index, vl);
+    vint32m8_t v_val = __riscv_vwmul_vv_i32m8(va, vb, vl);
+
+    if (left_shift > 0) {
+      v_val = __riscv_vsll_vx_i32m8(v_val, left_shift, vl);
+    }
+
+    vint32m8_t v_scaled =
+        __riscv_vsmul_vx_i32m8(v_val, multiplier, __RISCV_VXRM_RNU, vl);
+
+    if (right_shift > 0) {
+      v_scaled =
+          __riscv_vssra_vx_i32m8(v_scaled, right_shift, __RISCV_VXRM_RNU, vl);
+    }
+
+    vint32m8_t v_zp_added = __riscv_vadd_vx_i32m8(v_scaled, output_zp, vl);
+
+    vint16m4_t v_narrow_16 =
+        __riscv_vnclip_wx_i16m4(v_zp_added, 0, __RISCV_VXRM_RNU, vl);
+    vint8m2_t v_out =
+        __riscv_vnclip_wx_i8m2(v_narrow_16, 0, __RISCV_VXRM_RNU, vl);
+
+    __riscv_vse8_v_i8m2(output + index, v_out, vl);
+
+    index += vl;
   }
 }
 } // namespace tensor_utils
