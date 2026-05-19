@@ -210,20 +210,20 @@ void CwiseMul(const int16_t* input_1, const int16_t* input_2,
 
 void CwiseAdd(const int16_t* input_1, const int16_t* input_2, int n_batch,
               int n_input, int16_t* output) {
-  PORTABLE_RISCV(CwiseAdd, input_1, input_2, n_batch, n_input, output);
+  RISCV_OR_PORTABLE(CwiseAdd, input_1, input_2, n_batch, n_input, output);
 }
 
 void CwiseClipping(float* vector, const int v_size,
                    const float clipping_value) {
-  PORTABLE_RISCV(CwiseClipping, vector, v_size, clipping_value);
+  RISCV_OR_PORTABLE(CwiseClipping, vector, v_size, clipping_value);
 }
 void CwiseClipping(int16_t* vector, const int v_size,
                    const int16_t clipping_value) {
-  PORTABLE_RISCV(CwiseClipping, vector, v_size, clipping_value);
+  RISCV_OR_PORTABLE(CwiseClipping, vector, v_size, clipping_value);
 }
 void CwiseClipping(int8_t* vector, const int v_size,
                    const int8_t clipping_value) {
-  PORTABLE_RISCV(CwiseClipping, vector, v_size, clipping_value);
+  RISCV_OR_PORTABLE(CwiseClipping, vector, v_size, clipping_value);
 }
 
 void BatchVectorBatchVectorDotProduct(const int16_t* vector1,

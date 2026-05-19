@@ -444,6 +444,80 @@ void RISCVCwiseMul(const int16_t *input_1, const int16_t *input_2,
     index += vl;
   }
 }
+
+void RISCVCwiseAdd(const int16_t *input_1, const int16_t *input_2, int n_batch,
+                   int n_input, int16_t *output) {
+  int total_elements = n_batch * n_input;
+  int index = 0;
+
+  while (index < total_elements) {
+    size_t vl = __riscv_vsetvl_e16m8(total_elements - index);
+
+    vint16m8_t va = __riscv_vle16_v_i16m8(input_1 + index, vl);
+    vint16m8_t vb = __riscv_vle16_v_i16m8(input_2 + index, vl);
+    vint16m8_t v_out = __riscv_vsadd_vv_i16m8(va, vb, vl);
+
+    __riscv_vse16_v_i16m8(output + index, v_out, vl);
+
+    index += vl;
+  }
+}
+
+void RISCVCwiseClipping(float *__restrict__ vector, const int v_size,
+                        const float clipping_value) {
+
+  int index = 0;
+  float neg_clipping_value = -clipping_value;
+
+  while (index < v_size) {
+    size_t vl = __riscv_vsetvl_e32m8(v_size - index);
+
+    vfloat32m8_t v_val = __riscv_vle32_v_f32m8(vector + index, vl);
+
+    v_val = __riscv_vfmin_vf_f32m8(v_val, clipping_value, vl);
+    v_val = __riscv_vfmax_vf_f32m8(v_val, neg_clipping_value, vl);
+
+    __riscv_vse32_v_f32m8(vector + index, v_val, vl);
+
+    index += vl;
+  }
+}
+
+void RISCVCwiseClipping(int16_t *__restrict__ vector, const int v_size,
+                        const int16_t clipping_value) {
+  int index = 0;
+  int16_t neg_clipping_value = -clipping_value;
+
+  while (index < v_size) {
+    size_t vl = __riscv_vsetvl_e16m8(v_size - index);
+
+    vint16m8_t v_val = __riscv_vle16_v_i16m8(vector + index, vl);
+    v_val = __riscv_vmin_vx_i16m8(v_val, clipping_value, vl);
+    v_val = __riscv_vmax_vx_i16m8(v_val, neg_clipping_value, vl);
+
+    __riscv_vse16_v_i16m8(vector + index, v_val, vl);
+
+    index += vl;
+  }
+}
+
+void RISCVCwiseClipping(int8_t *__restrict__ vector, const int v_size,
+                   const int8_t clipping_value) {
+  int index = 0;
+  int8_t neg_clipping_value = -clipping_value;
+
+  while (index < v_size) {
+    size_t vl = __riscv_vsetvl_e8m8(v_size - index);
+
+    vint8m8_t v_val = __riscv_vle8_v_i8m8(vector + index, vl);
+    v_val = __riscv_vmin_vx_i8m8(v_val, clipping_value, vl);
+    v_val = __riscv_vmax_vx_i8m8(v_val, neg_clipping_value, vl);
+
+    __riscv_vse8_v_i8m8(vector + index, v_val, vl);
+
+    index += vl;
+  }
+}
 } // namespace tensor_utils
 } // namespace tflite
 
