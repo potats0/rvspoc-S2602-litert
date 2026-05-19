@@ -502,7 +502,7 @@ void RISCVCwiseClipping(int16_t *__restrict__ vector, const int v_size,
 }
 
 void RISCVCwiseClipping(int8_t *__restrict__ vector, const int v_size,
-                   const int8_t clipping_value) {
+                        const int8_t clipping_value) {
   int index = 0;
   int8_t neg_clipping_value = -clipping_value;
 
@@ -518,6 +518,200 @@ void RISCVCwiseClipping(int8_t *__restrict__ vector, const int v_size,
     index += vl;
   }
 }
+
+void RISCVPortableBatchVectorBatchVectorDotProduct(
+    const int16_t *__restrict__ vector1, const int16_t *__restrict__ vector2,
+    int v_size, int n_batch, int32_t *__restrict__ result) {
+  for (int b = 0; b < n_batch; b++) {
+
+    size_t vlmax = __riscv_vsetvlmax_e32m8();
+    vint32m8_t v_acc = __riscv_vmv_v_x_i32m8(0, vlmax);
+
+    int elements_left = v_size;
+    const int16_t *ptr1 = vector1;
+    const int16_t *ptr2 = vector2;
+
+    while (elements_left > 0) {
+      size_t vl = __riscv_vsetvl_e16m4(elements_left);
+
+      vint16m4_t va = __riscv_vle16_v_i16m4(ptr1, vl);
+      vint16m4_t vb = __riscv_vle16_v_i16m4(ptr2, vl);
+      v_acc = __riscv_vwmacc_vv_i32m8(v_acc, va, vb, vl);
+
+      ptr1 += vl;
+      ptr2 += vl;
+      elements_left -= vl;
+    }
+
+    size_t vl_m1 = __riscv_vsetvlmax_e32m1();
+    vint32m1_t v_res_scalar = __riscv_vmv_v_x_i32m1(0, vl_m1);
+    v_res_scalar = __riscv_vredsum_vs_i32m8_i32m1(v_acc, v_res_scalar, vlmax);
+    result[b] = __riscv_vmv_x_s_i32m1_i32(v_res_scalar);
+
+    vector1 += v_size;
+    vector2 += v_size;
+  }
+}
+
+float RISCVVectorVectorDotProduct(const float *vector1, const float *vector2,
+                                  int v_size) {
+  int elements_left = v_size;
+  size_t vlmax = __riscv_vsetvlmax_e32m8();
+
+  vfloat32m8_t v_acc = __riscv_vfmv_v_f_f32m8(0.0f, vlmax);
+
+  while (elements_left > 0) {
+    size_t vl = __riscv_vsetvl_e32m8(elements_left);
+
+    vfloat32m8_t va = __riscv_vle32_v_f32m8(vector1, vl);
+    vfloat32m8_t vb = __riscv_vle32_v_f32m8(vector2, vl);
+    v_acc = __riscv_vfmacc_vv_f32m8(v_acc, va, vb, vl);
+
+    vector1 += vl;
+    vector2 += vl;
+    elements_left -= vl;
+  }
+
+  size_t vl_m1 = __riscv_vsetvlmax_e32m1();
+  vfloat32m1_t v_res_scalar = __riscv_vfmv_v_f_f32m1(0.0f, vl_m1);
+
+  v_res_scalar = __riscv_vfredusum_vs_f32m8_f32m1(v_acc, v_res_scalar, vlmax);
+
+  return __riscv_vfmv_f_s_f32m1_f32(v_res_scalar);
+}
+
+void RISCVVectorBatchVectorCwiseProductAccumulate(
+    const int16_t *vector, int v_size, const int16_t *batch_vector, int n_batch,
+    int32_t multiplier, int shift, int16_t *result) {
+  int left_shift = shift > 0 ? shift : 0;
+  int right_shift = shift > 0 ? 0 : -shift;
+
+  for (int b = 0; b < n_batch; b++) {
+
+    int elements_left = v_size;
+    const int16_t *v_ptr = vector;
+
+    while (elements_left > 0) {
+      size_t vl = __riscv_vsetvl_e16m4(elements_left);
+
+      vint16m4_t va = __riscv_vle16_v_i16m4(v_ptr, vl);
+      vint16m4_t vb = __riscv_vle16_v_i16m4(batch_vector, vl);
+      vint16m4_t v_res_in = __riscv_vle16_v_i16m4(result, vl);
+
+      vint32m8_t v_prod = __riscv_vwmul_vv_i32m8(va, vb, vl);
+
+      if (left_shift > 0) {
+        v_prod =
+            __riscv_vsll_vx_i32m8(v_prod, left_shift, vl); // 先左移垫高精度
+      }
+      v_prod = __riscv_vsmul_vx_i32m8(v_prod, multiplier, __RISCV_VXRM_RNU, vl);
+
+      if (right_shift > 0) {
+        v_prod = __riscv_vssra_vx_i32m8(v_prod, right_shift, __RISCV_VXRM_RNU,
+                                        vl); // 后右移砍尾巴
+      }
+
+      vint32m8_t v_acc = __riscv_vwadd_wv_i32m8(v_prod, v_res_in, vl);
+      vint16m4_t v_out =
+          __riscv_vnclip_wx_i16m4(v_acc, 0, __RISCV_VXRM_RNU, vl);
+
+      __riscv_vse16_v_i16m4(result, v_out, vl);
+
+      v_ptr += vl;
+      batch_vector += vl;
+      result += vl;
+      elements_left -= vl;
+    }
+  }
+}
+
+void RISCVVectorScalarMultiply(const int8_t *vector, const int v_size,
+                               const float scale, float *result) {
+  int index = 0;
+
+  while (index < v_size) {
+    size_t vl = __riscv_vsetvl_e8m2(v_size - index);
+
+    vint8m2_t v_in = __riscv_vle8_v_i8m2(vector + index, vl);
+    vint16m4_t v_ext = __riscv_vsext_vf2_i16m4(v_in, vl);
+
+    vfloat32m8_t v_f32 = __riscv_vfwcvt_f_x_v_f32m8(v_ext, vl);
+    vfloat32m8_t v_res = __riscv_vfmul_vf_f32m8(v_f32, scale, vl);
+
+    __riscv_vse32_v_f32m8(result + index, v_res, vl);
+
+    index += vl;
+  }
+}
+
+void RISCVAsymmetricQuantizeFloats(const float *values, const int size,
+                                   int8_t *quantized_values,
+                                   float *scaling_factor, int32_t *offset) {
+  const int32_t kMinScale = -128;
+  const int32_t kMaxScale = 127;
+  const double qmin_double = kMinScale;
+  const double qmax_double = kMaxScale;
+
+  const auto minmax = std::minmax_element(values, values + size);
+  const double rmin = static_cast<double>(std::min(0.0f, *minmax.first));
+  const double rmax = static_cast<double>(std::max(0.0f, *minmax.second));
+
+  if (rmin == rmax) {
+    std::memset(quantized_values, 0, size * sizeof(int8_t));
+    *scaling_factor = 1.0f;
+    *offset = 0;
+    return;
+  }
+
+  double scale = (rmax - rmin) / (qmax_double - qmin_double);
+
+  const double zero_point_from_min = qmin_double - rmin / scale;
+  const double zero_point_from_max = qmax_double - rmax / scale;
+  const double zero_point_from_min_error =
+      std::abs(qmin_double) + std::abs(rmin / scale);
+  const double zero_point_from_max_error =
+      std::abs(qmax_double) + std::abs(rmax / scale);
+  const double zero_point_double =
+      zero_point_from_min_error < zero_point_from_max_error
+          ? zero_point_from_min
+          : zero_point_from_max;
+
+  int8_t nudged_zero_point = 0;
+  if (zero_point_double <= qmin_double) {
+    nudged_zero_point = kMinScale;
+  } else if (zero_point_double >= qmax_double) {
+    nudged_zero_point = kMaxScale;
+  } else {
+    nudged_zero_point = static_cast<int8_t>(std::round(zero_point_double));
+  }
+
+  *scaling_factor = static_cast<float>(scale);
+  *offset = nudged_zero_point;
+
+  float scaling_factor_inv = 1.0f / (*scaling_factor);
+  float offset_f = static_cast<float>(*offset);
+
+  int index = 0;
+
+  while (index < size) {
+    size_t vl = __riscv_vsetvl_e32m8(size - index);
+    vfloat32m8_t v_val = __riscv_vle32_v_f32m8(values + index, vl);
+
+    vfloat32m8_t v_scaled =
+        __riscv_vfmul_vf_f32m8(v_val, scaling_factor_inv, vl);
+    vfloat32m8_t v_shifted = __riscv_vfadd_vf_f32m8(v_scaled, offset_f, vl);
+
+    vint32m8_t v_i32 = __riscv_vfcvt_x_f_v_i32m8(v_shifted, vl);
+
+    vint16m4_t v_i16 = __riscv_vnclip_wx_i16m4(v_i32, 0, __RISCV_VXRM_RNU, vl);
+    vint8m2_t v_i8 = __riscv_vnclip_wx_i8m2(v_i16, 0, __RISCV_VXRM_RNU, vl);
+
+    __riscv_vse8_v_i8m2(quantized_values + index, v_i8, vl);
+
+    index += vl;
+  }
+}
+
 } // namespace tensor_utils
 } // namespace tflite
 

@@ -190,6 +190,9 @@ void RISCVMeanStddevNormalization(const float* __restrict__ input_vector,
                                  float* __restrict__ output_vector, int v_size,
                                  int n_batch);
 
+void RISCVPortableBatchVectorBatchVectorDotProduct(
+    const int16_t *__restrict__ vector1, const int16_t *__restrict__ vector2,
+    int v_size, int n_batch, int32_t *__restrict__ result);
 #endif  // USE_RISCV
 
 }  // namespace tensor_utils
