@@ -712,6 +712,90 @@ void RISCVAsymmetricQuantizeFloats(const float *values, const int size,
   }
 }
 
+void RISCVSymmetricQuantizeFloats(const float *values, const int size,
+                                  int8_t *quantized_values, float min_value,
+                                  float max_value, float *scaling_factor) {
+  const int32_t kScale = 127;
+  const float range = std::max(std::abs(min_value), std::abs(max_value));
+
+  if (range == 0) {
+    std::memset(quantized_values, 0, size * sizeof(int8_t));
+    *scaling_factor = 1.0f;
+    return;
+  }
+
+  *scaling_factor = range / kScale;
+  const float scaling_factor_inv = kScale / range;
+
+  int i = 0;
+  int n = size;
+
+  while (n > 0) {
+    size_t vl = __riscv_vsetvl_e32m8(n);
+
+    vfloat32m8_t v_src = __riscv_vle32_v_f32m8(values + i, vl);
+    vfloat32m8_t v_scaled =
+        __riscv_vfmul_vf_f32m8(v_src, scaling_factor_inv, vl);
+
+    vint32m8_t v_int32 = __riscv_vfcvt_x_f_v_i32m8(v_scaled, vl);
+
+    vint16m4_t v_i16 =
+        __riscv_vnclip_wx_i16m4(v_int32, 0, __RISCV_VXRM_RNU, vl);
+    vint8m2_t v_i8 = __riscv_vnclip_wx_i8m2(v_i16, 0, __RISCV_VXRM_RNU, vl);
+
+    __riscv_vse8_v_i8m2(quantized_values + i, v_i8, vl);
+
+    i += vl;
+    n -= vl;
+  }
+}
+
+namespace {
+void RISCVFindMinMax(const float *values, const int size, float *min_value,
+                     float *max_value) {
+  int i = 0;
+  int n = size;
+
+  vfloat32m8_t v_max_accumulator = __riscv_vfmv_v_f_f32m8(
+      -std::numeric_limits<float>::max(), __riscv_vsetvlmax_e32m8());
+  vfloat32m8_t v_min_accumulator = __riscv_vfmv_v_f_f32m8(
+      std::numeric_limits<float>::max(), __riscv_vsetvlmax_e32m8());
+
+  while (n > 0) {
+    size_t vl = __riscv_vsetvl_e32m8(n);
+
+    vfloat32m8_t v_src = __riscv_vle32_v_f32m8(values + i, vl);
+    v_max_accumulator = __riscv_vfmax_vv_f32m8(v_max_accumulator, v_src, vl);
+    v_min_accumulator = __riscv_vfmin_vv_f32m8(v_min_accumulator, v_src, vl);
+
+    i += vl;
+    n -= vl;
+  }
+
+  vfloat32m1_t v_scalar_max =
+      __riscv_vfmv_v_f_f32m1(-std::numeric_limits<float>::max(), 1);
+  vfloat32m1_t v_scalar_min =
+      __riscv_vfmv_v_f_f32m1(std::numeric_limits<float>::max(), 1);
+
+  v_scalar_max = __riscv_vfredmax_vs_f32m8_f32m1(
+      v_max_accumulator, v_scalar_max, __riscv_vsetvlmax_e32m4());
+  v_scalar_min = __riscv_vfredmin_vs_f32m8_f32m1(
+      v_min_accumulator, v_scalar_min, __riscv_vsetvlmax_e32m4());
+
+  *max_value = __riscv_vfmv_f_s_f32m1_f32(v_scalar_max);
+  *min_value = __riscv_vfmv_f_s_f32m1_f32(v_scalar_min);
+}
+} // namespace
+
+void RISCVSymmetricQuantizeFloats(const float *values, const int size,
+                                  int8_t *quantized_values, float *min_value,
+                                  float *max_value, float *scaling_factor) {
+
+  RISCVFindMinMax(values, size, min_value, max_value);
+  RISCVSymmetricQuantizeFloats(values, size, quantized_values, *min_value,
+                               *max_value, scaling_factor);
+}
+
 } // namespace tensor_utils
 } // namespace tflite
 

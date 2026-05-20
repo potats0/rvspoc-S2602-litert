@@ -273,14 +273,14 @@ void VectorScalarMultiply(const int8_t *vector, int v_size, float scale,
 void SymmetricQuantizeFloats(const float *values, const int size,
                              int8_t *quantized_values, float *min_value,
                              float *max_value, float *scaling_factor) {
-  PORTABLE_RISCV(SymmetricQuantizeFloats, values, size, quantized_values,
+  RISCV_OR_PORTABLE(SymmetricQuantizeFloats, values, size, quantized_values,
                  min_value, max_value, scaling_factor);
 }
 
 void SymmetricQuantizeFloats(const float *values, const int size,
                              int8_t *quantized_values, float min_value,
                              float max_value, float *scaling_factor) {
-  PORTABLE_RISCV(SymmetricQuantizeFloats, values, size, quantized_values,
+  RISCV_OR_PORTABLE(SymmetricQuantizeFloats, values, size, quantized_values,
                  min_value, max_value, scaling_factor);
 }
 
