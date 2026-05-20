@@ -964,6 +964,120 @@ void RISCVMeanStddevNormalization(const float *__restrict__ input_vector,
     output_vector += v_size;
   }
 }
+
+inline vint32m4_t VectorMultiplyByQuantizedMultiplier(
+    vint32m4_t v_x, int32_t quantized_multiplier, int shift, size_t vl) {
+  int left_shift = shift > 0 ? shift : 0;
+  int right_shift = shift > 0 ? 0 : -shift;
+
+  if (left_shift > 0) {
+    v_x = __riscv_vsll_vx_i32m4(v_x, left_shift, vl);
+  }
+
+  v_x = __riscv_vsmul_vx_i32m4(v_x, quantized_multiplier, __RISCV_VXRM_RNU, vl);
+  if (right_shift > 0) {
+    vint32m4_t v_sign = __riscv_vsra_vx_i32m4(v_x, 31, vl);
+
+    int32_t offset = 1 << (right_shift - 1);
+    vint32m4_t v_adjusted = __riscv_vadd_vx_i32m4(v_x, offset, vl);
+    v_adjusted = __riscv_vadd_vv_i32m4(v_adjusted, v_sign, vl);
+    v_x = __riscv_vsra_vx_i32m4(v_adjusted, right_shift, vl);
+  }
+  return v_x;
+}
+
+void RISCVApplyLayerNorm(const int16_t *input,
+                         const int16_t *layer_norm_weights, const int32_t *bias,
+                         int32_t layer_norm_scale_a, int32_t layer_norm_scale_b,
+                         int32_t variance_limit, int n_batch, int n_input,
+                         int16_t *output) {
+  static const int kTwoToPower20 = 1 << 20;
+  for (int i = 0; i < n_batch; ++i) {
+    const int16_t *current_input = input + i * n_input;
+    int16_t *current_output = output + i * n_input;
+
+    size_t vl;
+    vint64m8_t v_sum = __riscv_vmv_v_x_i64m8(0, __riscv_vsetvlmax_e64m8());
+    vint64m8_t v_sum_sq = __riscv_vmv_v_x_i64m8(0, __riscv_vsetvlmax_e64m8());
+
+    for (int j = 0; j < n_input; j += vl) {
+      vl = __riscv_vsetvl_e16m2(n_input - j);
+
+      vint16m2_t v_in16 = __riscv_vle16_v_i16m2(&current_input[j], vl);
+      vint32m4_t v_in32 = __riscv_vsext_vf2_i32m4(v_in16, vl);
+
+      v_sum = __riscv_vwadd_wv_i64m8(v_sum, v_in32, vl);
+      v_sum_sq = __riscv_vwmacc_vv_i64m8(v_sum_sq, v_in32, v_in32, vl);
+    }
+
+    vl = __riscv_vsetvlmax_e64m8();
+    vint64m1_t v_red_start = __riscv_vmv_s_x_i64m1(0, 1);
+    vint64m1_t v_red_sum =
+        __riscv_vredsum_vs_i64m8_i64m1(v_sum, v_red_start, vl);
+    int64_t sum = __riscv_vmv_x_s_i64m1_i64(v_red_sum);
+
+    vint64m1_t v_red_sum_sq =
+        __riscv_vredsum_vs_i64m8_i64m1(v_sum_sq, v_red_start, vl);
+    int64_t sum_sq = __riscv_vmv_x_s_i64m1_i64(v_red_sum_sq);
+
+    int32_t mean = static_cast<int32_t>(sum * 1024 / n_input);
+    int32_t temp = kTwoToPower20 / n_input;
+    int64_t variance = sum_sq * temp - static_cast<int64_t>(mean) * mean;
+    int32_t variance2 = static_cast<int32_t>(variance / kTwoToPower20);
+    if (variance2 < 1)
+      variance2 = variance_limit;
+
+    int32_t stddev_inverse_a;
+    int stddev_inverse_b;
+    GetInvSqrtQuantizedMultiplierExp(variance2, -1, &stddev_inverse_a,
+                                     &stddev_inverse_b);
+
+    for (int j = 0; j < n_input; j += vl) {
+      vl = __riscv_vsetvl_e16m2(n_input - j);
+
+      vint16m2_t v_in16 = __riscv_vle16_v_i16m2(&current_input[j], vl);
+      vint32m4_t v_val = __riscv_vsext_vf2_i32m4(v_in16, vl);
+
+      // shifted = 1024 * val - mean
+      vint32m4_t v_shifted = __riscv_vmul_vx_i32m4(v_val, 1024, vl);
+      v_shifted = __riscv_vsub_vx_i32m4(v_shifted, mean, vl);
+
+      // rescaled
+      vint32m4_t v_rescaled = VectorMultiplyByQuantizedMultiplier(
+          v_shifted, stddev_inverse_a, stddev_inverse_b, vl);
+
+      // val3 = rescaled * layer_norm_weights[j] + bias[j]
+      vint16m2_t v_w16 = __riscv_vle16_v_i16m2(&layer_norm_weights[j], vl);
+      vint32m4_t v_w32 = __riscv_vsext_vf2_i32m4(v_w16, vl);
+      vint32m4_t v_bias = __riscv_vle32_v_i32m4(&bias[j], vl);
+
+      //  int32 * int32 -> int64
+      vint64m8_t v_val3 = __riscv_vwmul_vv_i64m8(v_rescaled, v_w32, vl);
+      //  int64 + int32 -> int64
+      v_val3 = __riscv_vwadd_wv_i64m8(v_val3, v_bias, vl);
+
+      //  (val3 > 0 ? val3 + 512 : val3 - 512) / 1024
+      vint64m8_t v_sign = __riscv_vsra_vx_i64m8(v_val3, 63, vl);
+      // 2. 先让所有元素加上 512
+      vint64m8_t v_adjusted = __riscv_vadd_vx_i64m8(v_val3, 512, vl);
+
+      // 3. 再加上符号位（正数加了 0，负数加了 -1 以修正右移截断误差）
+      v_adjusted = __riscv_vadd_vv_i64m8(v_adjusted, v_sign, vl);
+
+      // 4. 算术右移 10 位，完美等价于 C++ 的有条件除以 1024
+      vint64m8_t v_rounded_i64 = __riscv_vsra_vx_i64m8(v_adjusted, 10, vl);
+
+      // 5. 使用你已经验证成功的标准窄化截断指令
+      vint32m4_t v_val4 = __riscv_vncvt_x_x_w_i32m4(v_rounded_i64, vl);
+      vint32m4_t v_val5 = VectorMultiplyByQuantizedMultiplier(
+          v_val4, layer_norm_scale_a, layer_norm_scale_b + 12, vl);
+
+      vint16m2_t v_out =
+          __riscv_vnclip_wx_i16m2(v_val5, 0, __RISCV_VXRM_RNU, vl);
+      __riscv_vse16_v_i16m2(&current_output[j], v_out, vl);
+    }
+  }
+}
 } // namespace tensor_utils
 } // namespace tflite
 

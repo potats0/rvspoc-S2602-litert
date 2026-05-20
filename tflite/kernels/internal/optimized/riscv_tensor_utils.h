@@ -161,9 +161,9 @@ void ApplyLayerNorm(const int16_t *input, const int16_t *layer_norm_weights,
                     const int32_t *bias, int32_t layer_norm_scale_a,
                     int32_t layer_norm_scale_b, int32_t variance_limit,
                     int n_batch, int n_input, int16_t *output) {
-  PORTABLE_RISCV(ApplyLayerNorm, input, layer_norm_weights, bias,
-                 layer_norm_scale_a, layer_norm_scale_b, variance_limit,
-                 n_batch, n_input, output);
+  RISCV_OR_PORTABLE(ApplyLayerNorm, input, layer_norm_weights, bias,
+                    layer_norm_scale_a, layer_norm_scale_b, variance_limit,
+                    n_batch, n_input, output);
 }
 
 void ApplyLayerNormFloat(const int16_t *input,
