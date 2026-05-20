@@ -230,8 +230,8 @@ void CwiseClipping(int8_t *vector, const int v_size,
 void BatchVectorBatchVectorDotProduct(const int16_t *vector1,
                                       const int16_t *vector2, int v_size,
                                       int n_batch, int32_t *result) {
-  RISCVPortableBatchVectorBatchVectorDotProduct(vector1, vector2, v_size,
-                                                n_batch, result);
+  RISCVBatchVectorBatchVectorDotProduct(vector1, vector2, v_size, n_batch,
+                                        result);
 }
 
 void VectorBatchVectorCwiseProductAccumulate(const int16_t *vector, int v_size,
@@ -239,7 +239,7 @@ void VectorBatchVectorCwiseProductAccumulate(const int16_t *vector, int v_size,
                                              int n_batch, int32_t multiplier,
                                              int shift, int16_t *result) {
   RISCV_OR_PORTABLE(VectorBatchVectorCwiseProductAccumulate, vector, v_size,
-                 batch_vector, n_batch, multiplier, shift, result);
+                    batch_vector, n_batch, multiplier, shift, result);
 }
 
 float VectorVectorDotProduct(const float *vector1, const float *vector2,
@@ -274,46 +274,45 @@ void SymmetricQuantizeFloats(const float *values, const int size,
                              int8_t *quantized_values, float *min_value,
                              float *max_value, float *scaling_factor) {
   RISCV_OR_PORTABLE(SymmetricQuantizeFloats, values, size, quantized_values,
-                 min_value, max_value, scaling_factor);
+                    min_value, max_value, scaling_factor);
 }
 
 void SymmetricQuantizeFloats(const float *values, const int size,
                              int8_t *quantized_values, float min_value,
                              float max_value, float *scaling_factor) {
   RISCV_OR_PORTABLE(SymmetricQuantizeFloats, values, size, quantized_values,
-                 min_value, max_value, scaling_factor);
+                    min_value, max_value, scaling_factor);
 }
 
 void AsymmetricQuantizeFloats(const float *values, const int size,
                               int8_t *quantized_values, float *scaling_factor,
                               int32_t *offset) {
   RISCV_OR_PORTABLE(AsymmetricQuantizeFloats, values, size, quantized_values,
-                 scaling_factor, offset);
+                    scaling_factor, offset);
 }
 
 void ReductionSumVector(const float *input_vector, float *output_vector,
                         int output_size, int reduction_size) {
-  PORTABLE_RISCV(ReductionSumVector, input_vector, output_vector, output_size,
-                 reduction_size);
+  RISCV_OR_PORTABLE(ReductionSumVector, input_vector, output_vector,
+                    output_size, reduction_size);
 }
 
 void ReductionSumVector(const int32_t *input_vector, int32_t *output_vector,
                         int output_size, int reduction_size) {
-  PortableReductionSumVector(input_vector, output_vector, output_size,
-                             reduction_size);
+  ReductionSumVector(input_vector, output_vector, output_size, reduction_size);
 }
 
 void ReductionSumVector(const int8_t *input_vector, int32_t *output_vector,
                         int output_size, int reduction_size) {
-  PORTABLE_RISCV(ReductionSumVector, input_vector, output_vector, output_size,
-                 reduction_size);
+  RISCV_OR_PORTABLE(ReductionSumVector, input_vector, output_vector,
+                    output_size, reduction_size);
 }
 
 void MeanStddevNormalization(const float *__restrict__ input_vector,
                              float *__restrict__ output_vector, int v_size,
                              int n_batch) {
-  PORTABLE_RISCV(MeanStddevNormalization, input_vector, output_vector, v_size,
-                 n_batch);
+  RISCV_OR_PORTABLE(MeanStddevNormalization, input_vector, output_vector,
+                    v_size, n_batch);
 }
 
 void TwoGateSaturatingAdd(const int8_t *input, int8_t input_zp,

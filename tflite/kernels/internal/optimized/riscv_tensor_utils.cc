@@ -519,9 +519,10 @@ void RISCVCwiseClipping(int8_t *__restrict__ vector, const int v_size,
   }
 }
 
-void RISCVPortableBatchVectorBatchVectorDotProduct(
-    const int16_t *__restrict__ vector1, const int16_t *__restrict__ vector2,
-    int v_size, int n_batch, int32_t *__restrict__ result) {
+void RISCVBatchVectorBatchVectorDotProduct(const int16_t *__restrict__ vector1,
+                                           const int16_t *__restrict__ vector2,
+                                           int v_size, int n_batch,
+                                           int32_t *__restrict__ result) {
   for (int b = 0; b < n_batch; b++) {
 
     size_t vlmax = __riscv_vsetvlmax_e32m8();
@@ -796,6 +797,173 @@ void RISCVSymmetricQuantizeFloats(const float *values, const int size,
                                *max_value, scaling_factor);
 }
 
+void RISCVReductionSumVector(const float *input_vector, float *output_vector,
+                             int output_size, int reduction_size) {
+  for (int o = 0; o < output_size; o++) {
+    int r = reduction_size;
+    int i = 0;
+
+    vfloat32m8_t v_sum_accumulator =
+        __riscv_vfmv_v_f_f32m8(0.0f, __riscv_vsetvlmax_e32m8());
+
+    while (r > 0) {
+      size_t vl = __riscv_vsetvl_e32m8(r);
+      vfloat32m8_t v_src = __riscv_vle32_v_f32m8(input_vector + i, vl);
+
+      v_sum_accumulator = __riscv_vfadd_vv_f32m8(v_sum_accumulator, v_src, vl);
+
+      i += vl;
+      r -= vl;
+    }
+
+    vfloat32m1_t v_scalar_sum = __riscv_vfmv_v_f_f32m1(0.0f, 1);
+
+    v_scalar_sum = __riscv_vfredusum_vs_f32m8_f32m1(
+        v_sum_accumulator, v_scalar_sum, __riscv_vsetvlmax_e32m8());
+
+    output_vector[o] = __riscv_vfmv_f_s_f32m1_f32(v_scalar_sum);
+
+    input_vector += reduction_size;
+  }
+}
+
+void RISCVReductionSumVector(const int32_t *input_vector,
+                             int32_t *output_vector, int output_size,
+                             int reduction_size) {
+  for (int o = 0; o < output_size; o++) {
+    int r = reduction_size;
+    int i = 0;
+
+    vint32m8_t v_sum_accumulator =
+        __riscv_vmv_v_x_i32m8(0, __riscv_vsetvlmax_e32m8());
+
+    while (r > 0) {
+      size_t vl = __riscv_vsetvl_e32m8(r);
+      vint32m8_t v_src = __riscv_vle32_v_i32m8(input_vector + i, vl);
+
+      v_sum_accumulator = __riscv_vadd_vv_i32m8(v_sum_accumulator, v_src, vl);
+
+      i += vl;
+      r -= vl;
+    }
+
+    vint32m1_t v_scalar_sum = __riscv_vmv_v_x_i32m1(0, 1);
+    v_scalar_sum = __riscv_vredsum_vs_i32m8_i32m1(
+        v_sum_accumulator, v_scalar_sum, __riscv_vsetvlmax_e32m8());
+
+    output_vector[o] = __riscv_vmv_x_s_i32m1_i32(v_scalar_sum);
+
+    input_vector += reduction_size;
+  }
+}
+
+void RISCVReductionSumVector(const int8_t *input_vector, int32_t *output_vector,
+                             int output_size, int reduction_size) {
+  for (int o = 0; o < output_size; o++) {
+    int r = reduction_size;
+    int i = 0;
+
+    vint32m8_t v_sum_accumulator =
+        __riscv_vmv_v_x_i32m8(0, __riscv_vsetvlmax_e32m8());
+
+    while (r > 0) {
+      size_t vl = __riscv_vsetvl_e8m2(r);
+      vint8m2_t v_src = __riscv_vle8_v_i8m2(input_vector + i, vl);
+      vint16m4_t v_src_i16 = __riscv_vsext_vf2_i16m4(v_src, vl);
+      v_sum_accumulator =
+          __riscv_vwadd_wv_i32m8(v_sum_accumulator, v_src_i16, vl);
+
+      i += vl;
+      r -= vl;
+    }
+
+    vint32m1_t v_scalar_sum = __riscv_vmv_v_x_i32m1(0, 1);
+    v_scalar_sum = __riscv_vredsum_vs_i32m8_i32m1(
+        v_sum_accumulator, v_scalar_sum, __riscv_vsetvlmax_e32m8());
+
+    output_vector[o] = __riscv_vmv_x_s_i32m1_i32(v_scalar_sum);
+
+    input_vector += reduction_size;
+  }
+}
+
+void RISCVMeanStddevNormalization(const float *__restrict__ input_vector,
+                                  float *__restrict__ output_vector, int v_size,
+                                  int n_batch) {
+  constexpr float kNormalizationConstant = 1e-8f;
+
+  for (int batch = 0; batch < n_batch; ++batch) {
+    int r = v_size;
+    int i = 0;
+
+    vfloat32m8_t v_sum_acc =
+        __riscv_vfmv_v_f_f32m8(0.0f, __riscv_vsetvlmax_e32m8());
+
+    while (r > 0) {
+      size_t vl = __riscv_vsetvl_e32m8(r);
+      vfloat32m8_t v_src = __riscv_vle32_v_f32m8(input_vector + i, vl);
+
+      v_sum_acc = __riscv_vfadd_vv_f32m8(v_sum_acc, v_src, vl);
+
+      i += vl;
+      r -= vl;
+    }
+
+    vfloat32m1_t v_scalar_sum = __riscv_vfmv_v_f_f32m1(0.0f, 1);
+    v_scalar_sum = __riscv_vfredusum_vs_f32m8_f32m1(v_sum_acc, v_scalar_sum,
+                                                    __riscv_vsetvlmax_e32m8());
+
+    const float mean = __riscv_vfmv_f_s_f32m1_f32(v_scalar_sum) / v_size;
+
+    r = v_size;
+    i = 0;
+
+    vfloat32m8_t v_sq_diff_acc =
+        __riscv_vfmv_v_f_f32m8(0.0f, __riscv_vsetvlmax_e32m8());
+
+    while (r > 0) {
+      size_t vl = __riscv_vsetvl_e32m8(r);
+      vfloat32m8_t v_src = __riscv_vle32_v_f32m8(input_vector + i, vl);
+
+      vfloat32m8_t v_diff = __riscv_vfsub_vf_f32m8(v_src, mean, vl);
+
+      v_sq_diff_acc =
+          __riscv_vfmacc_vv_f32m8(v_sq_diff_acc, v_diff, v_diff, vl);
+
+      i += vl;
+      r -= vl;
+    }
+
+    vfloat32m1_t v_scalar_sq_diff = __riscv_vfmv_v_f_f32m1(0.0f, 1);
+    v_scalar_sq_diff = __riscv_vfredusum_vs_f32m8_f32m1(
+        v_sq_diff_acc, v_scalar_sq_diff, __riscv_vsetvlmax_e32m8());
+
+    const float variance =
+        __riscv_vfmv_f_s_f32m1_f32(v_scalar_sq_diff) / v_size;
+    const float stddev_inv =
+        1.0f / std::sqrt(variance + kNormalizationConstant);
+
+    r = v_size;
+    i = 0;
+
+    while (r > 0) {
+      size_t vl = __riscv_vsetvl_e32m8(r);
+      vfloat32m8_t v_src = __riscv_vle32_v_f32m8(input_vector + i, vl);
+
+      vfloat32m8_t v_res = __riscv_vfsub_vf_f32m8(v_src, mean, vl);
+
+      v_res = __riscv_vfmul_vf_f32m8(v_res, stddev_inv, vl);
+
+      __riscv_vse32_v_f32m8(output_vector + i, v_res, vl);
+
+      i += vl;
+      r -= vl;
+    }
+
+    input_vector += v_size;
+    output_vector += v_size;
+  }
+}
 } // namespace tensor_utils
 } // namespace tflite
 
