@@ -111,7 +111,7 @@ void RISCVMatrixBatchVectorMultiplyAccumulate(const float *matrix, int m_rows,
         vfloat32m1_t vector_rvv =
             __riscv_vle32_v_f32m1(vector_in_batch + c, vl);
         vfloat32m1_t matrix_rvv = __riscv_vle32_v_f32m1(matrix_row + c, vl);
-        v_acc = __riscv_vfmacc_vv_f32m1(v_acc, matrix_rvv, vector_rvv, vl);
+        v_acc = __riscv_vfmacc_vv_f32m1_tu(v_acc, matrix_rvv, vector_rvv, vl);
         c += vl;
         cols_left -= vl;
       }
@@ -142,7 +142,7 @@ void RISCVMatrixBatchVectorMultiplyAccumulate(
 
       size_t vlmax_i8 = __riscv_vsetvlmax_e8m1();
 
-      vint16m2_t v_dotprod = __riscv_vmv_v_x_i16m2(0, vlmax_i8);
+      vint32m4_t v_dotprod = __riscv_vmv_v_x_i32m4(0, vlmax_i8);
 
       while (cols_left > 0) {
         size_t vl = __riscv_vsetvl_e8m1(cols_left);
@@ -150,18 +150,20 @@ void RISCVMatrixBatchVectorMultiplyAccumulate(
         vint8m1_t v_mat_i8 = __riscv_vle8_v_i8m1(row_ptr + c, vl);
         vint8m1_t v_vec_i8 = __riscv_vle8_v_i8m1(vectors + c, vl);
 
-        v_dotprod = __riscv_vwmacc_vv_i16m2(v_dotprod, v_mat_i8, v_vec_i8, vl);
+        vint16m2_t v_mat_i16 = __riscv_vsext_vf2_i16m2(v_mat_i8, vl);
+        vint16m2_t v_vec_i16 = __riscv_vsext_vf2_i16m2(v_vec_i8, vl);
+
+        v_dotprod =
+            __riscv_vwmacc_vv_i32m4_tu(v_dotprod, v_mat_i16, v_vec_i16, vl);
 
         cols_left -= vl;
         c += vl;
       }
 
-      vint16m1_t v_zero = __riscv_vmv_v_x_i16m1(0, __riscv_vsetvlmax_e16m1());
-
-      vint16m1_t v_res =
-          __riscv_vredsum_vs_i16m2_i16m1(v_dotprod, v_zero, vlmax_i8);
-
-      int16_t final_dotprod = __riscv_vmv_x_s_i16m1_i16(v_res);
+      vint32m1_t v_zero = __riscv_vmv_v_x_i32m1(0, vlmax_i8);
+      vint32m1_t v_res =
+          __riscv_vredsum_vs_i32m4_i32m1(v_dotprod, v_zero, vlmax_i8);
+      int32_t final_dotprod = __riscv_vmv_x_s_i32m1_i32(v_res);
 
       *result += static_cast<float>(final_dotprod) * batch_scaling_factor;
       ++result;
@@ -580,31 +582,29 @@ void RISCVSparseMatrixBatchVectorMultiplyAccumulate(
     float *__restrict__ result) {
   const int kBlockSize = 16;
 
-  const float *matrix_ptr = matrix;
-
   for (int batch = 0; batch < n_batch; batch++) {
     const float *vector_in_batch = vector + batch * m_cols;
+
+    // ✅ 修复1：对于每个 batch，稀疏矩阵和 ledger 的指针必须重置到开头
     const uint8_t *ledger_ptr = ledger;
+    const float *matrix_ptr = matrix;
 
     for (int row = 0; row < m_rows; row++) {
-      size_t vlmax = __riscv_vsetvlmax_e32m4();
-      vfloat32m4_t v_dotprod = __riscv_vfmv_v_f_f32m4(0.0f, vlmax);
+      // ✅ 修复2：因为我们固定按 kBlockSize (16) 处理，统一使用 vl=16
+      size_t vl = __riscv_vsetvl_e32m4(kBlockSize);
+      vfloat32m4_t v_dotprod = __riscv_vfmv_v_f_f32m4(0.0f, vl);
 
       int num_nonzero_blocks = *ledger_ptr++;
       if (num_nonzero_blocks > 0) {
-
         for (int i = 0; i < num_nonzero_blocks; i++) {
           uint8_t original_col_block_index = *ledger_ptr++;
-          const int block_start_index =
-              original_col_block_index * kBlockSize; // kBlockSize = 16
+          const int block_start_index = original_col_block_index * kBlockSize;
 
           const float *vector_block_in_batch_ptr =
               vector_in_batch + block_start_index;
 
-          size_t vl = __riscv_vsetvl_e32m4(kBlockSize);
           vfloat32m4_t v_vec =
               __riscv_vle32_v_f32m4(vector_block_in_batch_ptr, vl);
-
           vfloat32m4_t v_mat = __riscv_vle32_v_f32m4(matrix_ptr, vl);
 
           matrix_ptr += kBlockSize;
@@ -612,14 +612,13 @@ void RISCVSparseMatrixBatchVectorMultiplyAccumulate(
           v_dotprod = __riscv_vfmacc_vv_f32m4(v_dotprod, v_mat, v_vec, vl);
         }
       }
-      float dot_prod_scalar = 0.0f;
 
-      size_t vlmax_m1 = __riscv_vsetvlmax_e32m1();
-      vfloat32m1_t v_res_scalar = __riscv_vfmv_v_f_f32m1(0.0f, vlmax_m1);
-
+      // ✅ 修复3：规约求和必须使用真实的计算长度 vl，而不是 vlmax
+      vfloat32m1_t v_res_scalar = __riscv_vfmv_v_f_f32m1(0.0f, vl);
       v_res_scalar =
-          __riscv_vfredusum_vs_f32m4_f32m1(v_dotprod, v_res_scalar, vlmax);
-      dot_prod_scalar = __riscv_vfmv_f_s_f32m1_f32(v_res_scalar);
+          __riscv_vfredusum_vs_f32m4_f32m1(v_dotprod, v_res_scalar, vl);
+      float dot_prod_scalar = __riscv_vfmv_f_s_f32m1_f32(v_res_scalar);
+
       result[batch * m_rows + row] += dot_prod_scalar;
     }
   }

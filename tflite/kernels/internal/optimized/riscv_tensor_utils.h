@@ -298,7 +298,8 @@ void ReductionSumVector(const float *input_vector, float *output_vector,
 
 void ReductionSumVector(const int32_t *input_vector, int32_t *output_vector,
                         int output_size, int reduction_size) {
-  ReductionSumVector(input_vector, output_vector, output_size, reduction_size);
+  RISCV_OR_PORTABLE(ReductionSumVector, input_vector, output_vector,
+                    output_size, reduction_size);
 }
 
 void ReductionSumVector(const int8_t *input_vector, int32_t *output_vector,

@@ -172,6 +172,10 @@ void RISCVAsymmetricQuantizeFloats(const float *values, const int size,
 void RISCVReductionSumVector(const float *input_vector, float *output_vector,
                              int output_size, int reduction_size);
 
+void RISCVReductionSumVector(const int32_t *input_vector,
+                             int32_t *output_vector, int output_size,
+                             int reduction_size);
+
 void RISCVReductionSumVector(const int8_t *input_vector, int32_t *output_vector,
                              int output_size, int reduction_size);
 
