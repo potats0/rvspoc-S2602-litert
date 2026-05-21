@@ -198,6 +198,24 @@ void RISCVApplyLayerNormFloat(const int16_t *input,
                               int32_t layer_norm_scale_a,
                               int32_t layer_norm_scale_b, const int32_t *bias,
                               int n_batch, int n_input, int16_t *output);
+
+void RISCVMatrixBatchVectorMultiply(const int8_t *input,
+                                    int32_t input_zeropoint,
+                                    const int8_t *input_to_gate_weights,
+                                    int32_t input_to_gate_effective_scale_a,
+                                    int32_t input_to_gate_effective_scale_b,
+                                    int32_t n_batch, int32_t n_input,
+                                    int32_t n_cell, int8_t *gate_output,
+                                    int8_t gate_output_zp);
+
+void RISCVMatrixBatchVectorMultiply(const int16_t *hidden,
+                                    const int8_t *hidden_to_output_weights,
+                                    int32_t proj_effective_scale_a,
+                                    int32_t proj_effective_scale_b,
+                                    const int32_t *gate_bias, int32_t n_batch,
+                                    int32_t n_hidden, int32_t n_output,
+                                    int32_t output_zp, int8_t *proj_output);
+
 #endif // USE_RISCV
 
 } // namespace tensor_utils

@@ -584,39 +584,40 @@ void RISCVSparseMatrixBatchVectorMultiplyAccumulate(
 
   for (int batch = 0; batch < n_batch; batch++) {
     const float *vector_in_batch = vector + batch * m_cols;
-
-    // ✅ 修复1：对于每个 batch，稀疏矩阵和 ledger 的指针必须重置到开头
     const uint8_t *ledger_ptr = ledger;
     const float *matrix_ptr = matrix;
 
     for (int row = 0; row < m_rows; row++) {
-      // ✅ 修复2：因为我们固定按 kBlockSize (16) 处理，统一使用 vl=16
-      size_t vl = __riscv_vsetvl_e32m4(kBlockSize);
-      vfloat32m4_t v_dotprod = __riscv_vfmv_v_f_f32m4(0.0f, vl);
+      size_t vlmax = __riscv_vsetvlmax_e32m4();
+      vfloat32m4_t v_dotprod = __riscv_vfmv_v_f_f32m4(0.0f, vlmax);
 
       int num_nonzero_blocks = *ledger_ptr++;
       if (num_nonzero_blocks > 0) {
         for (int i = 0; i < num_nonzero_blocks; i++) {
           uint8_t original_col_block_index = *ledger_ptr++;
           const int block_start_index = original_col_block_index * kBlockSize;
-
           const float *vector_block_in_batch_ptr =
               vector_in_batch + block_start_index;
 
-          vfloat32m4_t v_vec =
-              __riscv_vle32_v_f32m4(vector_block_in_batch_ptr, vl);
-          vfloat32m4_t v_mat = __riscv_vle32_v_f32m4(matrix_ptr, vl);
+          int c = 0;
+          while (c < kBlockSize) {
+            size_t vl = __riscv_vsetvl_e32m4(kBlockSize - c);
 
-          matrix_ptr += kBlockSize;
+            vfloat32m4_t v_vec =
+                __riscv_vle32_v_f32m4(vector_block_in_batch_ptr + c, vl);
+            vfloat32m4_t v_mat = __riscv_vle32_v_f32m4(matrix_ptr, vl);
 
-          v_dotprod = __riscv_vfmacc_vv_f32m4(v_dotprod, v_mat, v_vec, vl);
+            v_dotprod = __riscv_vfmacc_vv_f32m4_tu(v_dotprod, v_mat, v_vec, vl);
+
+            matrix_ptr += vl;
+            c += vl;
+          }
         }
       }
 
-      // ✅ 修复3：规约求和必须使用真实的计算长度 vl，而不是 vlmax
-      vfloat32m1_t v_res_scalar = __riscv_vfmv_v_f_f32m1(0.0f, vl);
+      vfloat32m1_t v_res_scalar = __riscv_vfmv_v_f_f32m1(0.0f, vlmax);
       v_res_scalar =
-          __riscv_vfredusum_vs_f32m4_f32m1(v_dotprod, v_res_scalar, vl);
+          __riscv_vfredusum_vs_f32m4_f32m1(v_dotprod, v_res_scalar, vlmax);
       float dot_prod_scalar = __riscv_vfmv_f_s_f32m1_f32(v_res_scalar);
 
       result[batch * m_rows + row] += dot_prod_scalar;
@@ -1476,6 +1477,123 @@ void RISCVSparseMatrixBatchVectorMultiplyAccumulate(
 
     } // for row
   } // for batch
+}
+
+void RISCVMatrixBatchVectorMultiply(const int8_t *input,
+                                    int32_t input_zeropoint,
+                                    const int8_t *input_to_gate_weights,
+                                    int32_t input_to_gate_effective_scale_a,
+                                    int32_t input_to_gate_effective_scale_b,
+                                    int32_t n_batch, int32_t n_input,
+                                    int32_t n_cell, int8_t *gate_output,
+                                    int8_t gate_output_zp) {
+  const int32_t int8_max = 127;
+  const int32_t int8_min = -128;
+
+  for (int batch = 0; batch < n_batch; ++batch) {
+    const int8_t *input_batch_ptr = input + batch * n_input;
+
+    for (int row = 0; row < n_cell; ++row) {
+      const int8_t *weights_row_ptr = input_to_gate_weights + row * n_input;
+
+      int c = 0;
+      int cols_left = n_input;
+
+      size_t vlmax = __riscv_vsetvlmax_e8m1();
+      vint32m4_t v_acc = __riscv_vmv_v_x_i32m4(0, vlmax);
+
+      while (cols_left > 0) {
+        size_t vl = __riscv_vsetvl_e8m1(cols_left);
+
+        vint8m1_t v_in = __riscv_vle8_v_i8m1(input_batch_ptr + c, vl);
+        vint8m1_t v_wt = __riscv_vle8_v_i8m1(weights_row_ptr + c, vl);
+
+        vint16m2_t v_in16 = __riscv_vsext_vf2_i16m2(v_in, vl);
+        vint16m2_t v_wt16 = __riscv_vsext_vf2_i16m2(v_wt, vl);
+
+        // input_zeropoint 通常在 [-128, 127] 之间，16-bit 减法绝对安全
+        v_in16 = __riscv_vsub_vx_i16m2(
+            v_in16, static_cast<int16_t>(input_zeropoint), vl);
+
+        v_acc = __riscv_vwmacc_vv_i32m4_tu(v_acc, v_in16, v_wt16, vl);
+
+        c += vl;
+        cols_left -= vl;
+      }
+
+      vint32m1_t v_zero = __riscv_vmv_v_x_i32m1(0, vlmax);
+      vint32m1_t v_res = __riscv_vredsum_vs_i32m4_i32m1(v_acc, v_zero, vlmax);
+      int32_t acc = __riscv_vmv_x_s_i32m1_i32(v_res);
+
+      acc = MultiplyByQuantizedMultiplier(acc, input_to_gate_effective_scale_a,
+                                          input_to_gate_effective_scale_b);
+      acc += gate_output_zp;
+
+      if (acc > int8_max)
+        acc = int8_max;
+      if (acc < int8_min)
+        acc = int8_min;
+
+      gate_output[batch * n_cell + row] = static_cast<int8_t>(acc);
+    }
+  }
+}
+
+void RISCVMatrixBatchVectorMultiply(const int16_t *hidden,
+                                    const int8_t *hidden_to_output_weights,
+                                    int32_t proj_effective_scale_a,
+                                    int32_t proj_effective_scale_b,
+                                    const int32_t *gate_bias, int32_t n_batch,
+                                    int32_t n_hidden, int32_t n_output,
+                                    int32_t output_zp, int8_t *proj_output) {
+  const int32_t int8_max = 127;
+  const int32_t int8_min = -128;
+
+  for (int batch = 0; batch < n_batch; ++batch) {
+    const int16_t *hidden_batch_ptr = hidden + batch * n_hidden;
+
+    for (int row = 0; row < n_output; ++row) {
+      const int8_t *weights_row_ptr = hidden_to_output_weights + row * n_hidden;
+
+      int c = 0;
+      int cols_left = n_hidden;
+
+      size_t vlmax = __riscv_vsetvlmax_e16m2();
+      vint32m4_t v_acc = __riscv_vmv_v_x_i32m4(0, vlmax);
+
+      while (cols_left > 0) {
+        size_t vl = __riscv_vsetvl_e16m2(cols_left);
+
+        vint16m2_t v_in = __riscv_vle16_v_i16m2(hidden_batch_ptr + c, vl);
+
+        vint8m1_t v_wt8 = __riscv_vle8_v_i8m1(weights_row_ptr + c, vl);
+        vint16m2_t v_wt16 = __riscv_vsext_vf2_i16m2(v_wt8, vl);
+
+        v_acc = __riscv_vwmacc_vv_i32m4_tu(v_acc, v_in, v_wt16, vl);
+
+        c += vl;
+        cols_left -= vl;
+      }
+
+      vint32m1_t v_zero = __riscv_vmv_v_x_i32m1(0, vlmax);
+      vint32m1_t v_res = __riscv_vredsum_vs_i32m4_i32m1(v_acc, v_zero, vlmax);
+      int32_t acc = __riscv_vmv_x_s_i32m1_i32(v_res);
+
+      acc += gate_bias[row];
+
+      acc = MultiplyByQuantizedMultiplier(acc, proj_effective_scale_a,
+                                          proj_effective_scale_b);
+
+      acc += output_zp;
+
+      if (acc > int8_max)
+        acc = int8_max;
+      if (acc < int8_min)
+        acc = int8_min;
+
+      proj_output[batch * n_output + row] = static_cast<int8_t>(acc);
+    }
+  }
 }
 } // namespace tensor_utils
 } // namespace tflite

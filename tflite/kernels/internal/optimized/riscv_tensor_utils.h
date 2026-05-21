@@ -131,10 +131,10 @@ void MatrixBatchVectorMultiply(const int8_t *input, int32_t input_zeropoint,
                                int32_t input_to_gate_effective_scale_b,
                                int32_t n_batch, int32_t n_input, int32_t n_cell,
                                int8_t *gate_output, int8_t gate_output_zp) {
-  PortableMatrixBatchVectorMultiply(
-      input, input_zeropoint, input_to_gate_weights,
-      input_to_gate_effective_scale_a, input_to_gate_effective_scale_b, n_batch,
-      n_input, n_cell, gate_output, gate_output_zp);
+  RISCVMatrixBatchVectorMultiply(input, input_zeropoint, input_to_gate_weights,
+                                 input_to_gate_effective_scale_a,
+                                 input_to_gate_effective_scale_b, n_batch,
+                                 n_input, n_cell, gate_output, gate_output_zp);
 }
 
 void MatrixBatchVectorMultiply(const int16_t *hidden,
@@ -144,10 +144,10 @@ void MatrixBatchVectorMultiply(const int16_t *hidden,
                                const int32_t *gate_bias, int32_t n_batch,
                                int32_t n_hidden, int32_t n_output,
                                int32_t output_zp, int8_t *proj_output) {
-  PortableMatrixBatchVectorMultiply(hidden, hidden_to_output_weights,
-                                    proj_effective_scale_a,
-                                    proj_effective_scale_b, gate_bias, n_batch,
-                                    n_hidden, n_output, output_zp, proj_output);
+  RISCVMatrixBatchVectorMultiply(hidden, hidden_to_output_weights,
+                                 proj_effective_scale_a, proj_effective_scale_b,
+                                 gate_bias, n_batch, n_hidden, n_output,
+                                 output_zp, proj_output);
 }
 
 void MatrixScalarMultiplyAccumulate(const int8_t *matrix, int32_t scalar,
