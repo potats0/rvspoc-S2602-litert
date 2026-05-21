@@ -88,11 +88,11 @@ void SparseMatrixBatchVectorMultiplyAccumulate1x16(
     const int32_t *per_channel_shift, const int32_t output_offset,
     const int32_t output_activation_min, const int32_t output_activation_max,
     int8_t *__restrict__ result) {
-  PORTABLE_RISCV(SparseMatrixBatchVectorMultiplyAccumulate1x16, matrix,
-                 segments, indices, m_rows, m_cols, vector, bias_vector,
-                 n_batch, input_offset, output_multiplier, output_shift,
-                 per_channel_scale, per_channel_shift, output_offset,
-                 output_activation_min, output_activation_max, result);
+  RISCV_OR_PORTABLE(SparseMatrixBatchVectorMultiplyAccumulate1x16, matrix,
+                    segments, indices, m_rows, m_cols, vector, bias_vector,
+                    n_batch, input_offset, output_multiplier, output_shift,
+                    per_channel_scale, per_channel_shift, output_offset,
+                    output_activation_min, output_activation_max, result);
 }
 
 void SparseMatrixBatchVectorMultiplyAccumulate(
@@ -100,9 +100,9 @@ void SparseMatrixBatchVectorMultiplyAccumulate(
     const int m_cols, const int8_t *__restrict__ vectors,
     const float *scaling_factors, int n_batch, float *__restrict__ result,
     const float *per_channel_scale) {
-  PORTABLE_RISCV(SparseMatrixBatchVectorMultiplyAccumulate, matrix, ledger,
-                 m_rows, m_cols, vectors, scaling_factors, n_batch, result,
-                 per_channel_scale);
+  RISCV_OR_PORTABLE(SparseMatrixBatchVectorMultiplyAccumulate, matrix, ledger,
+                    m_rows, m_cols, vectors, scaling_factors, n_batch, result,
+                    per_channel_scale);
 }
 
 void MatrixBatchVectorMultiplyAccumulate(
@@ -110,9 +110,9 @@ void MatrixBatchVectorMultiplyAccumulate(
     const int8_t *input_to_gate_weights, int32_t multiplier, int32_t shift,
     int32_t n_batch, int32_t n_input, int32_t n_output, int32_t output_zp,
     int32_t *scratch, int16_t *output, CpuBackendContext *context) {
-  PORTABLE_RISCV(MatrixBatchVectorMultiplyAccumulate, input, bias,
-                 input_to_gate_weights, multiplier, shift, n_batch, n_input,
-                 n_output, output_zp, scratch, output, context);
+  RISCV_OR_PORTABLE(MatrixBatchVectorMultiplyAccumulate, input, bias,
+                    input_to_gate_weights, multiplier, shift, n_batch, n_input,
+                    n_output, output_zp, scratch, output, context);
 }
 
 void MatrixBatchVectorMultiplyAccumulate(
@@ -120,9 +120,9 @@ void MatrixBatchVectorMultiplyAccumulate(
     const int8_t *input_to_gate_weights, int32_t multiplier, int32_t shift,
     int32_t n_batch, int32_t n_input, int32_t n_output, int32_t output_zp,
     int32_t *scratch, int8_t *output, CpuBackendContext *context) {
-  PORTABLE_RISCV(MatrixBatchVectorMultiplyAccumulate, input, bias,
-                 input_to_gate_weights, multiplier, shift, n_batch, n_input,
-                 n_output, output_zp, scratch, output, context);
+  RISCV_OR_PORTABLE(MatrixBatchVectorMultiplyAccumulate, input, bias,
+                    input_to_gate_weights, multiplier, shift, n_batch, n_input,
+                    n_output, output_zp, scratch, output, context);
 }
 
 void MatrixBatchVectorMultiply(const int8_t *input, int32_t input_zeropoint,
@@ -153,8 +153,8 @@ void MatrixBatchVectorMultiply(const int16_t *hidden,
 void MatrixScalarMultiplyAccumulate(const int8_t *matrix, int32_t scalar,
                                     int32_t n_row, int32_t n_col,
                                     int32_t *output) {
-  PORTABLE_RISCV(MatrixScalarMultiplyAccumulate, matrix, scalar, n_row, n_col,
-                 output);
+  RISCV_OR_PORTABLE(MatrixScalarMultiplyAccumulate, matrix, scalar, n_row,
+                    n_col, output);
 }
 
 void ApplyLayerNorm(const int16_t *input, const int16_t *layer_norm_weights,
@@ -171,9 +171,8 @@ void ApplyLayerNormFloat(const int16_t *input,
                          int32_t layer_norm_scale_a, int32_t layer_norm_scale_b,
                          const int32_t *bias, int n_batch, int n_input,
                          int16_t *output) {
-  PortableApplyLayerNormFloat(input, layer_norm_weights, layer_norm_scale_a,
-                              layer_norm_scale_b, bias, n_batch, n_input,
-                              output);
+  RISCVApplyLayerNormFloat(input, layer_norm_weights, layer_norm_scale_a,
+                           layer_norm_scale_b, bias, n_batch, n_input, output);
 }
 
 void ApplySigmoid(const int16_t *input, int32_t n_batch, int32_t n_input,

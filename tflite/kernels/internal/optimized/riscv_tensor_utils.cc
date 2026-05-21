@@ -65,6 +65,30 @@ limitations under the License.
 namespace tflite {
 namespace tensor_utils {
 
+namespace {
+inline vint32m4_t VectorMultiplyByQuantizedMultiplier(
+    vint32m4_t v_x, int32_t quantized_multiplier, int shift, size_t vl) {
+  int left_shift = shift > 0 ? shift : 0;
+  int right_shift = shift > 0 ? 0 : -shift;
+
+  if (left_shift > 0) {
+    v_x = __riscv_vsll_vx_i32m4(v_x, left_shift, vl);
+  }
+
+  v_x = __riscv_vsmul_vx_i32m4(v_x, quantized_multiplier, __RISCV_VXRM_RNU, vl);
+  if (right_shift > 0) {
+    vint32m4_t v_sign = __riscv_vsra_vx_i32m4(v_x, 31, vl);
+
+    int32_t offset = 1 << (right_shift - 1);
+    vint32m4_t v_adjusted = __riscv_vadd_vx_i32m4(v_x, offset, vl);
+    v_adjusted = __riscv_vadd_vv_i32m4(v_adjusted, v_sign, vl);
+    v_x = __riscv_vsra_vx_i32m4(v_adjusted, right_shift, vl);
+  }
+  return v_x;
+}
+
+} // namespace
+
 void RISCVMatrixBatchVectorMultiplyAccumulate(const float *matrix, int m_rows,
                                               int m_cols, const float *vector,
                                               int n_batch, float *result) {
@@ -159,6 +183,13 @@ void RISCVMatrixBatchVectorMultiplyAccumulate(
     return;
   }
 
+  if (!compute_row_sums || *compute_row_sums) {
+    RISCVReductionSumVector(matrix, row_sums, m_rows, m_cols);
+    if (compute_row_sums) {
+      *compute_row_sums = false;
+    }
+  }
+
   for (int batch = 0; batch < n_batch; ++batch, vectors += m_cols) {
     const float batch_scaling_factor = scaling_factors[batch];
 
@@ -206,6 +237,140 @@ void RISCVMatrixBatchVectorMultiplyAccumulate(
       ++result;
 
       row_ptr += m_cols;
+    }
+  }
+}
+
+void RISCVMatrixBatchVectorMultiplyAccumulate(
+    const int8_t *input, const int32_t *bias,
+    const int8_t *input_to_gate_weights, int32_t multiplier, int32_t shift,
+    int32_t n_batch, int32_t n_input, int32_t n_output, int32_t output_zp,
+    int32_t *scratch, int16_t *output, CpuBackendContext *context) {
+
+  for (int batch = 0; batch < n_batch; ++batch) {
+    const int8_t *current_input = input + batch * n_input;
+
+    for (int row = 0; row < n_output; ++row) {
+      int32_t acc = bias[row];
+      const int8_t *current_weights = input_to_gate_weights + row * n_input;
+
+      size_t vlmax = __riscv_vsetvlmax_e32m8();
+      vint32m8_t v_acc32 = __riscv_vmv_v_x_i32m8(0, vlmax);
+
+      int col_left = n_input;
+      int col = 0;
+      while (col_left > 0) {
+        size_t vl = __riscv_vsetvl_e8m2(col_left);
+
+        vint8m2_t v_in8 = __riscv_vle8_v_i8m2(&current_input[col], vl);
+        vint8m2_t v_w8 = __riscv_vle8_v_i8m2(&current_weights[col], vl);
+
+        vint16m4_t v_in16 = __riscv_vsext_vf2_i16m4(v_in8, vl);
+        vint16m4_t v_w16 = __riscv_vsext_vf2_i16m4(v_w8, vl);
+
+        v_acc32 = __riscv_vwmacc_vv_i32m8(v_acc32, v_in16, v_w16, vl);
+
+        col += vl;
+        col_left -= vl;
+      }
+
+      vint32m1_t v_zero = __riscv_vmv_s_x_i32m1(0, vlmax);
+      vint32m1_t v_red = __riscv_vredsum_vs_i32m8_i32m1(v_acc32, v_zero, vlmax);
+
+      scratch[row] = acc + __riscv_vmv_x_s_i32m1_i32(v_red);
+    }
+
+    int row_left = n_output;
+    int row = 0;
+    while (row_left > 0) {
+      size_t vl = __riscv_vsetvl_e32m4(row_left);
+
+      vint32m4_t v_acc = __riscv_vle32_v_i32m4(&scratch[row], vl);
+      v_acc = VectorMultiplyByQuantizedMultiplier(v_acc, multiplier, shift, vl);
+
+      v_acc = __riscv_vadd_vx_i32m4(v_acc, output_zp, vl);
+
+      int16_t *current_output = &output[batch * n_output + row];
+      vint16m2_t v_out_old = __riscv_vle16_v_i16m2(current_output, vl);
+      vint32m4_t v_out_old_32 = __riscv_vsext_vf2_i32m4(v_out_old, vl);
+      v_acc = __riscv_vadd_vv_i32m4(v_acc, v_out_old_32, vl);
+
+      vint16m2_t v_out_new =
+          __riscv_vnclip_wx_i16m2(v_acc, 0, __RISCV_VXRM_RNU, vl);
+
+      __riscv_vse16_v_i16m2(current_output, v_out_new, vl);
+
+      row += vl;
+      row_left -= vl;
+    }
+  }
+}
+
+void RISCVMatrixBatchVectorMultiplyAccumulate(
+    const int8_t *input, const int32_t *bias,
+    const int8_t *input_to_gate_weights, int32_t multiplier, int32_t shift,
+    int32_t n_batch, int32_t n_input, int32_t n_output, int32_t output_zp,
+    int32_t *scratch, int8_t *output, CpuBackendContext *context) {
+
+  for (int batch = 0; batch < n_batch; ++batch) {
+    const int8_t *current_input = input + batch * n_input;
+
+    for (int row = 0; row < n_output; ++row) {
+      int32_t acc = bias[row];
+      const int8_t *current_weights = input_to_gate_weights + row * n_input;
+
+      size_t vlmax = __riscv_vsetvlmax_e32m8();
+      vint32m8_t v_acc32 = __riscv_vmv_v_x_i32m8(0, vlmax);
+
+      int col_left = n_input;
+      int col = 0;
+      while (col_left > 0) {
+        size_t vl = __riscv_vsetvl_e8m2(col_left);
+
+        vint8m2_t v_in8 = __riscv_vle8_v_i8m2(&current_input[col], vl);
+        vint8m2_t v_w8 = __riscv_vle8_v_i8m2(&current_weights[col], vl);
+
+        vint16m4_t v_in16 = __riscv_vsext_vf2_i16m4(v_in8, vl);
+        vint16m4_t v_w16 = __riscv_vsext_vf2_i16m4(v_w8, vl);
+
+        v_acc32 = __riscv_vwmacc_vv_i32m8(v_acc32, v_in16, v_w16, vl);
+
+        col += vl;
+        col_left -= vl;
+      }
+
+      vint32m1_t v_zero = __riscv_vmv_s_x_i32m1(0, vlmax);
+      vint32m1_t v_red = __riscv_vredsum_vs_i32m8_i32m1(v_acc32, v_zero, vlmax);
+
+      scratch[row] = acc + __riscv_vmv_x_s_i32m1_i32(v_red);
+    }
+
+    int row_left = n_output;
+    int row = 0;
+    while (row_left > 0) {
+      size_t vl = __riscv_vsetvl_e32m4(row_left);
+
+      vint32m4_t v_acc = __riscv_vle32_v_i32m4(&scratch[row], vl);
+
+      v_acc = VectorMultiplyByQuantizedMultiplier(v_acc, multiplier, shift, vl);
+
+      v_acc = __riscv_vadd_vx_i32m4(v_acc, output_zp, vl);
+
+      int8_t *current_output = &output[batch * n_output + row];
+      vint8m1_t v_out_old = __riscv_vle8_v_i8m1(current_output, vl);
+      vint32m4_t v_out_old_32 = __riscv_vsext_vf4_i32m4(v_out_old, vl);
+
+      v_acc = __riscv_vadd_vv_i32m4(v_acc, v_out_old_32, vl);
+
+      vint16m2_t v_acc16 =
+          __riscv_vnclip_wx_i16m2(v_acc, 0, __RISCV_VXRM_RNU, vl);
+      vint8m1_t v_out_new =
+          __riscv_vnclip_wx_i8m1(v_acc16, 0, __RISCV_VXRM_RNU, vl);
+
+      __riscv_vse8_v_i8m1(current_output, v_out_new, vl);
+
+      row += vl;
+      row_left -= vl;
     }
   }
 }
@@ -335,6 +500,80 @@ void RISCVSparseMatrixBatchVectorMultiplyAccumulate1x4(
   }
 }
 
+void RISCVSparseMatrixBatchVectorMultiplyAccumulate1x16(
+    const int8_t *__restrict__ matrix, const int32_t *__restrict__ segments,
+    const int32_t *__restrict__ indices, int m_rows, int m_cols,
+    const int8_t *__restrict__ vector, const int32_t *__restrict__ bias_vector,
+    int n_batch, const int32_t input_offset, const int32_t output_multiplier,
+    const int32_t output_shift, const int32_t *per_channel_scale,
+    const int32_t *per_channel_shift, const int32_t output_offset,
+    const int32_t output_activation_min, const int32_t output_activation_max,
+    int8_t *__restrict__ result) {
+  const int kBlockSize = 16;
+  TFLITE_DCHECK_EQ(m_cols % kBlockSize, 0);
+
+  for (int batch = 0; batch < n_batch; ++batch) {
+    // matrix_ptr 针对每一个 batch 都会重置，因为稀疏矩阵数据是不变的
+    const int8_t *matrix_ptr = matrix;
+
+    for (int row = 0; row < m_rows; ++row) {
+      int32_t dot_prod = 0;
+      const int8_t *vector_in_batch = vector + batch * m_cols;
+
+      for (int i = segments[row]; i < segments[row + 1]; ++i) {
+        const int block_start_index = indices[i] * kBlockSize;
+        const int8_t *vector_block_in_batch_ptr =
+            vector_in_batch + block_start_index;
+
+        int c = 0;
+        while (c < kBlockSize) {
+          size_t vl = __riscv_vsetvl_e8m1(kBlockSize - c);
+
+          vint8m1_t vm = __riscv_vle8_v_i8m1(matrix_ptr, vl);
+          vint8m1_t vv = __riscv_vle8_v_i8m1(vector_block_in_batch_ptr, vl);
+
+          vint16m2_t vm16 = __riscv_vsext_vf2_i16m2(vm, vl);
+          vint16m2_t vv16 = __riscv_vsext_vf2_i16m2(vv, vl);
+
+          // 根据分配律: M * V + M * Offset = M * (V + Offset)
+          // 转换为 16-bit 后相加避免了 8-bit 溢出
+          vv16 = __riscv_vadd_vx_i16m2(vv16, static_cast<int16_t>(input_offset),
+                                       vl);
+
+          // 4. 宽度扩展乘法: 16-bit * 16-bit -> 32-bit (Vector Widening
+          // Multiply)
+          vint32m4_t v_prod = __riscv_vwmul_vv_i32m4(vm16, vv16, vl);
+
+          // 5. 向量规约求和 (Vector Reduction Sum)
+          vint32m1_t v_red_init =
+              __riscv_vmv_v_x_i32m1(0, vl); // 初始化归约标量为 0
+          vint32m1_t v_red =
+              __riscv_vredsum_vs_i32m4_i32m1(v_prod, v_red_init, vl);
+
+          // 将规约得到的寄存器首元素提取到普通标量并累加
+          dot_prod += __riscv_vmv_x_s_i32m1_i32(v_red);
+
+          // 指针步进
+          matrix_ptr += vl;
+          vector_block_in_batch_ptr += vl;
+          c += vl;
+        }
+      }
+
+      const int32_t bias_value = bias_vector != nullptr ? bias_vector[row] : 0;
+      dot_prod = MultiplyByQuantizedMultiplier(
+          dot_prod + bias_value,
+          per_channel_scale ? per_channel_scale[row] : output_multiplier,
+          per_channel_shift ? per_channel_shift[row] : output_shift);
+      dot_prod += output_offset;
+
+      result[batch * m_rows + row] =
+          static_cast<int8_t>(ActivationFunctionWithMinMax(
+              dot_prod, output_activation_min, output_activation_max));
+    }
+  }
+}
+
 void RISCVSparseMatrixBatchVectorMultiplyAccumulate(
     const float *__restrict__ matrix, const uint8_t *__restrict__ ledger,
     int m_rows, int m_cols, const float *__restrict__ vector, int n_batch,
@@ -385,6 +624,7 @@ void RISCVSparseMatrixBatchVectorMultiplyAccumulate(
     }
   }
 }
+
 void RISCVCwiseMul(const int16_t *input_1, const int16_t *input_2, int n_batch,
                    int n_input, int shift, int16_t *output) {
   int total_elements = n_batch * n_input;
@@ -396,8 +636,9 @@ void RISCVCwiseMul(const int16_t *input_1, const int16_t *input_2, int n_batch,
     vint16m4_t va = __riscv_vle16_v_i16m4(input_1 + index, vl);
     vint16m4_t vb = __riscv_vle16_v_i16m4(input_2 + index, vl);
     vint32m8_t v_value = __riscv_vwmul_vv_i32m8(va, vb, vl);
-    vint16m4_t v_out =
-        __riscv_vnclip_wx_i16m4(v_value, shift, __RISCV_VXRM_RNU, vl);
+    vint32m8_t v_shifted =
+        __riscv_vssra_vx_i32m8(v_value, shift, __RISCV_VXRM_RNU, vl);
+    vint16m4_t v_out = __riscv_vncvt_x_x_w_i16m4(v_shifted, vl);
 
     __riscv_vse16_v_i16m4(output + index, v_out, vl);
 
@@ -599,6 +840,8 @@ void RISCVVectorBatchVectorCwiseProductAccumulate(
       vint16m4_t vb = __riscv_vle16_v_i16m4(batch_vector, vl);
       vint16m4_t v_res_in = __riscv_vle16_v_i16m4(result, vl);
 
+      // 这里理论上可以用MultiplyByQuantizedMultiplier
+      // 但是类型很难统一，先暂时不提换
       vint32m8_t v_prod = __riscv_vwmul_vv_i32m8(va, vb, vl);
 
       if (left_shift > 0) {
@@ -965,27 +1208,6 @@ void RISCVMeanStddevNormalization(const float *__restrict__ input_vector,
   }
 }
 
-inline vint32m4_t VectorMultiplyByQuantizedMultiplier(
-    vint32m4_t v_x, int32_t quantized_multiplier, int shift, size_t vl) {
-  int left_shift = shift > 0 ? shift : 0;
-  int right_shift = shift > 0 ? 0 : -shift;
-
-  if (left_shift > 0) {
-    v_x = __riscv_vsll_vx_i32m4(v_x, left_shift, vl);
-  }
-
-  v_x = __riscv_vsmul_vx_i32m4(v_x, quantized_multiplier, __RISCV_VXRM_RNU, vl);
-  if (right_shift > 0) {
-    vint32m4_t v_sign = __riscv_vsra_vx_i32m4(v_x, 31, vl);
-
-    int32_t offset = 1 << (right_shift - 1);
-    vint32m4_t v_adjusted = __riscv_vadd_vx_i32m4(v_x, offset, vl);
-    v_adjusted = __riscv_vadd_vv_i32m4(v_adjusted, v_sign, vl);
-    v_x = __riscv_vsra_vx_i32m4(v_adjusted, right_shift, vl);
-  }
-  return v_x;
-}
-
 void RISCVApplyLayerNorm(const int16_t *input,
                          const int16_t *layer_norm_weights, const int32_t *bias,
                          int32_t layer_norm_scale_a, int32_t layer_norm_scale_b,
@@ -1058,7 +1280,6 @@ void RISCVApplyLayerNorm(const int16_t *input,
 
       //  (val3 > 0 ? val3 + 512 : val3 - 512) / 1024
       vint64m8_t v_sign = __riscv_vsra_vx_i64m8(v_val3, 63, vl);
-      // 2. 先让所有元素加上 512
       vint64m8_t v_adjusted = __riscv_vadd_vx_i64m8(v_val3, 512, vl);
 
       // 3. 再加上符号位（正数加了 0，负数加了 -1 以修正右移截断误差）
@@ -1067,7 +1288,6 @@ void RISCVApplyLayerNorm(const int16_t *input,
       // 4. 算术右移 10 位，完美等价于 C++ 的有条件除以 1024
       vint64m8_t v_rounded_i64 = __riscv_vsra_vx_i64m8(v_adjusted, 10, vl);
 
-      // 5. 使用你已经验证成功的标准窄化截断指令
       vint32m4_t v_val4 = __riscv_vncvt_x_x_w_i32m4(v_rounded_i64, vl);
       vint32m4_t v_val5 = VectorMultiplyByQuantizedMultiplier(
           v_val4, layer_norm_scale_a, layer_norm_scale_b + 12, vl);
@@ -1077,6 +1297,186 @@ void RISCVApplyLayerNorm(const int16_t *input,
       __riscv_vse16_v_i16m2(&current_output[j], v_out, vl);
     }
   }
+}
+
+void RISCVApplyLayerNormFloat(const int16_t *input,
+                              const int16_t *layer_norm_weights,
+                              int32_t layer_norm_scale_a,
+                              int32_t layer_norm_scale_b, const int32_t *bias,
+                              int n_batch, int n_input, int16_t *output) {
+  // 离线预计算标量常数
+  const float layer_norm_scale =
+      layer_norm_scale_a *
+      std::pow(2.0, static_cast<double>(layer_norm_scale_b - 31));
+  const float bias_scale =
+      static_cast<float>(std::pow(2.0, -10)) * layer_norm_scale;
+  const float re_quant_scale = layer_norm_scale * 4096.0f; // 4096 即 2^12
+  const float bias_re_quant_scale = bias_scale * 4096.0f;
+
+  for (int batch = 0; batch < n_batch; ++batch) {
+    const int16_t *current_input = input + batch * n_input;
+    int16_t *current_output = output + batch * n_input;
+
+    // --- 第一阶段：计算 sum 和 sum_sq ---
+    size_t vlmax = __riscv_vsetvlmax_e32m8();
+    vfloat32m8_t v_sum_acc = __riscv_vfmv_v_f_f32m8(0.0f, vlmax);
+    vfloat32m8_t v_sum_sq_acc = __riscv_vfmv_v_f_f32m8(0.0f, vlmax);
+
+    size_t vl;
+    for (int i = 0; i < n_input; i += vl) {
+      vl = __riscv_vsetvl_e16m4(n_input - i);
+
+      vint16m4_t v_in16 = __riscv_vle16_v_i16m4(&current_input[i], vl);
+      vint32m8_t v_in32 = __riscv_vsext_vf2_i32m8(v_in16, vl);
+
+      // 【修复1】正确的 int32 到 float32 转换指令
+      vfloat32m8_t v_f32 = __riscv_vfcvt_f_x_v_f32m8(v_in32, vl);
+
+      v_sum_acc = __riscv_vfadd_vv_f32m8(v_sum_acc, v_f32, vl);
+      v_sum_sq_acc = __riscv_vfmacc_vv_f32m8(v_sum_sq_acc, v_f32, v_f32, vl);
+    }
+
+    vfloat32m1_t v_zero = __riscv_vfmv_v_f_f32m1(0.0f, 1);
+    vfloat32m1_t v_red_sum =
+        __riscv_vfredusum_vs_f32m8_f32m1(v_sum_acc, v_zero, vlmax);
+    vfloat32m1_t v_red_sum_sq =
+        __riscv_vfredusum_vs_f32m8_f32m1(v_sum_sq_acc, v_zero, vlmax);
+
+    float sum = __riscv_vfmv_f_s_f32m1_f32(v_red_sum);
+    float sum_sq = __riscv_vfmv_f_s_f32m1_f32(v_red_sum_sq);
+
+    float mean = sum / n_input;
+    float variance = sum_sq / n_input - mean * mean;
+    float stddev_inv = (variance <= 0.0f) ? (1.0f / std::sqrt(1e-8f))
+                                          : (1.0f / std::sqrt(variance));
+
+    // --- 第二阶段：归一化、放射变换与截断输出 ---
+    for (int i = 0; i < n_input; i += vl) {
+      vl = __riscv_vsetvl_e16m4(n_input - i);
+
+      vint16m4_t v_in16 = __riscv_vle16_v_i16m4(&current_input[i], vl);
+      vint32m8_t v_in32 = __riscv_vsext_vf2_i32m8(v_in16, vl);
+      vfloat32m8_t v_f32 = __riscv_vfcvt_f_x_v_f32m8(v_in32, vl); // 【修复1】
+
+      vfloat32m8_t v_norm = __riscv_vfsub_vf_f32m8(v_f32, mean, vl);
+      v_norm = __riscv_vfmul_vf_f32m8(v_norm, stddev_inv, vl);
+
+      vint16m4_t v_w16 = __riscv_vle16_v_i16m4(&layer_norm_weights[i], vl);
+      vint32m8_t v_w32 = __riscv_vsext_vf2_i32m8(v_w16, vl);
+      vfloat32m8_t v_w32_f = __riscv_vfcvt_f_x_v_f32m8(v_w32, vl); // 【修复1】
+
+      vfloat32m8_t v_res = __riscv_vfmul_vv_f32m8(v_norm, v_w32_f, vl);
+      v_res = __riscv_vfmul_vf_f32m8(v_res, re_quant_scale, vl);
+
+      vint32m8_t v_bias32 = __riscv_vle32_v_i32m8(&bias[i], vl);
+      vfloat32m8_t v_bias32_f =
+          __riscv_vfcvt_f_x_v_f32m8(v_bias32, vl); // 【修复1】
+
+      v_res =
+          __riscv_vfmacc_vf_f32m8(v_res, bias_re_quant_scale, v_bias32_f, vl);
+
+      // 使用 __RISCV_FRM_RMM (Round to Max Magnitude)，完美等价于 C++ 标准库的
+      // std::round()
+      vint32m8_t v_quant32 =
+          __riscv_vfcvt_x_f_v_i32m8_rm(v_res, __RISCV_FRM_RMM, vl);
+
+      vint16m4_t v_out16 =
+          __riscv_vnclip_wx_i16m4(v_quant32, 0, __RISCV_VXRM_RNU, vl);
+
+      __riscv_vse16_v_i16m4(&current_output[i], v_out16, vl);
+    }
+  }
+}
+
+void RISCVMatrixScalarMultiplyAccumulate(const int8_t *matrix, int32_t scalar,
+                                         int32_t n_row, int32_t n_col,
+                                         int32_t *output) {
+  for (int i = 0; i < n_row; ++i) {
+    int32_t row_sum = 0;
+    int remaining_col = n_col;
+    const int8_t *current_row = matrix + i * n_col;
+
+    size_t vl;
+    for (int j = 0; j < n_col; j += vl) {
+      vl = __riscv_vsetvl_e8m2(remaining_col);
+
+      vint8m2_t v_in8 = __riscv_vle8_v_i8m2(current_row, vl);
+
+      vint32m8_t v_in32 = __riscv_vsext_vf4_i32m8(v_in8, vl);
+
+      vint32m1_t v_zero = __riscv_vmv_s_x_i32m1(0, vl);
+      vint32m1_t v_sum = __riscv_vredsum_vs_i32m8_i32m1(v_in32, v_zero, vl);
+
+      row_sum += __riscv_vmv_x_s_i32m1_i32(v_sum);
+
+      current_row += vl;
+      remaining_col -= vl;
+    }
+
+    output[i] += row_sum * scalar;
+  }
+}
+
+void RISCVSparseMatrixBatchVectorMultiplyAccumulate(
+    const int8_t *__restrict__ matrix, const uint8_t *ledger, const int m_rows,
+    const int m_cols, const int8_t *__restrict__ vectors,
+    const float *scaling_factors, int n_batch, float *__restrict__ result,
+    const float *per_channel_scale) {
+
+  static const int kBlockSize = 16;
+
+  for (int batch = 0; batch < n_batch; ++batch, vectors += m_cols) {
+    const float batch_scaling_factor = scaling_factors[batch];
+    const uint8_t *ledger_ptr = ledger;
+    const int8_t *row_ptr = matrix;
+
+    for (int row = 0; row < m_rows; ++row) {
+      size_t vlmax = __riscv_vsetvlmax_e32m8();
+      vint32m8_t v_acc = __riscv_vmv_v_x_i32m8(0, vlmax);
+
+      int num_nonzero_blocks = *ledger_ptr++;
+
+      for (int i = 0; i < num_nonzero_blocks; i++) {
+        const int block_start_index = *ledger_ptr++ * kBlockSize;
+        const int8_t *vector_block_ptr = vectors + block_start_index;
+
+        int c = kBlockSize;
+        while (c > 0) {
+          // e8m2 配置：占用 2 组寄存器读 int8，
+          // 这样后续拓宽到 int16(m4) 和 int32(m8) 时才装得下
+          size_t vl = __riscv_vsetvl_e8m2(c);
+
+          vint8m2_t v_row = __riscv_vle8_v_i8m2(row_ptr, vl);
+          vint8m2_t v_vec = __riscv_vle8_v_i8m2(vector_block_ptr, vl);
+
+          // 第一级拓宽：把 8 位符号扩展成 16 位
+          vint16m4_t v_row16 = __riscv_vsext_vf2_i16m4(v_row, vl);
+          vint16m4_t v_vec16 = __riscv_vsext_vf2_i16m4(v_vec, vl);
+
+          // 第二级拓宽与乘累加：16位 * 16位 + 32位 -> 32位累加器
+          v_acc = __riscv_vwmacc_vv_i32m8(v_acc, v_row16, v_vec16, vl);
+
+          row_ptr += vl;
+          vector_block_ptr += vl;
+          c -= vl;
+        } // while block
+      } // for num_nonzero_blocks
+
+      // 2. 循环外水平规约求和 (Reduction)
+      vint32m1_t v_zero = __riscv_vmv_s_x_i32m1(0, vlmax);
+      vint32m1_t v_red = __riscv_vredsum_vs_i32m8_i32m1(v_acc, v_zero, vlmax);
+
+      int32_t dotprod = __riscv_vmv_x_s_i32m1_i32(v_red);
+
+      // 3. 浮点反量化缩放
+      float scaling_factor = batch_scaling_factor;
+      if (per_channel_scale) {
+        scaling_factor *= per_channel_scale[row];
+      }
+      result[batch * m_rows + row] += dotprod * scaling_factor;
+
+    } // for row
+  } // for batch
 }
 } // namespace tensor_utils
 } // namespace tflite

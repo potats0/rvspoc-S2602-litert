@@ -188,6 +188,12 @@ void RISCVBatchVectorBatchVectorDotProduct(const int16_t *__restrict__ vector1,
                                            const int16_t *__restrict__ vector2,
                                            int v_size, int n_batch,
                                            int32_t *__restrict__ result);
+
+void RISCVApplyLayerNormFloat(const int16_t *input,
+                              const int16_t *layer_norm_weights,
+                              int32_t layer_norm_scale_a,
+                              int32_t layer_norm_scale_b, const int32_t *bias,
+                              int n_batch, int n_input, int16_t *output);
 #endif // USE_RISCV
 
 } // namespace tensor_utils
