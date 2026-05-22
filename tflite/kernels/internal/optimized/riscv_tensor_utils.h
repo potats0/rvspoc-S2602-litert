@@ -322,7 +322,7 @@ void TwoGateSaturatingAdd(const int8_t *input, int8_t input_zp,
                           int32_t recurrent_effective_scale_a,
                           int32_t recurrent_effective_scale_b, int32_t n_batch,
                           int32_t n_cell, int16_t *output) {
-  PortableTwoGateSaturatingAdd(
+  RISCVTwoGateSaturatingAdd(
       input, input_zp, recurrent, recurrent_zp, input_effective_scale_a,
       input_effective_scale_b, recurrent_effective_scale_a,
       recurrent_effective_scale_b, n_batch, n_cell, output);

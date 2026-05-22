@@ -216,6 +216,15 @@ void RISCVMatrixBatchVectorMultiply(const int16_t *hidden,
                                     int32_t n_hidden, int32_t n_output,
                                     int32_t output_zp, int8_t *proj_output);
 
+void RISCVTwoGateSaturatingAdd(const int8_t *input, int8_t input_zp,
+                               const int8_t *recurrent, int8_t recurrent_zp,
+                               int32_t input_effective_scale_a,
+                               int32_t input_effective_scale_b,
+                               int32_t recurrent_effective_scale_a,
+                               int32_t recurrent_effective_scale_b,
+                               int32_t n_batch, int32_t n_cell,
+                               int16_t *output);
+
 #endif // USE_RISCV
 
 } // namespace tensor_utils

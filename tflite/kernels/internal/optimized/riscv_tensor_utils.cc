@@ -26,11 +26,8 @@ limitations under the License.
 #include <riscv_vector.h> // for Riscv
 
 #include "tflite/kernels/cpu_backend_context.h"
-#include "tflite/kernels/cpu_backend_gemm.h"
-#include "tflite/kernels/cpu_backend_gemm_params.h"
 #include "tflite/kernels/internal/common.h"
 #include "tflite/kernels/internal/compatibility.h"
-#include "tflite/kernels/internal/cppmath.h"
 #include "tflite/kernels/internal/optimized/cpu_check.h"
 #include "tflite/kernels/internal/optimized/riscv_tensor_utils_impl.h"
 
@@ -87,6 +84,26 @@ inline vint32m4_t VectorMultiplyByQuantizedMultiplier(
   return v_x;
 }
 
+inline vint32m8_t VectorMultiplyByQuantizedMultiplier(
+    vint32m8_t v_x, int32_t quantized_multiplier, int shift, size_t vl) {
+  int left_shift = shift > 0 ? shift : 0;
+  int right_shift = shift > 0 ? 0 : -shift;
+
+  if (left_shift > 0) {
+    v_x = __riscv_vsll_vx_i32m8(v_x, left_shift, vl);
+  }
+
+  v_x = __riscv_vsmul_vx_i32m8(v_x, quantized_multiplier, __RISCV_VXRM_RNU, vl);
+  if (right_shift > 0) {
+    vint32m8_t v_sign = __riscv_vsra_vx_i32m8(v_x, 31, vl);
+
+    int32_t offset = 1 << (right_shift - 1);
+    vint32m8_t v_adjusted = __riscv_vadd_vx_i32m8(v_x, offset, vl);
+    v_adjusted = __riscv_vadd_vv_i32m8(v_adjusted, v_sign, vl);
+    v_x = __riscv_vsra_vx_i32m8(v_adjusted, right_shift, vl);
+  }
+  return v_x;
+}
 } // namespace
 
 void RISCVMatrixBatchVectorMultiplyAccumulate(const float *matrix, int m_rows,
@@ -1593,6 +1610,49 @@ void RISCVMatrixBatchVectorMultiply(const int16_t *hidden,
 
       proj_output[batch * n_output + row] = static_cast<int8_t>(acc);
     }
+  }
+}
+
+// $$\text{Output} = \text{Activation}(\text{Input} \times W_{in} +
+// \text{Recurrent} \times W_{rec})$$
+void RISCVTwoGateSaturatingAdd(const int8_t *input, int8_t input_zp,
+                               const int8_t *recurrent, int8_t recurrent_zp,
+                               int32_t input_effective_scale_a,
+                               int32_t input_effective_scale_b,
+                               int32_t recurrent_effective_scale_a,
+                               int32_t recurrent_effective_scale_b,
+                               int32_t n_batch, int32_t n_cell,
+                               int16_t *output) {
+  int total_elements = n_batch * n_cell;
+  int i = 0;
+
+  while (total_elements > 0) {
+    size_t vl = __riscv_vsetvl_e32m8(total_elements);
+
+    vint8m2_t v_input_raw = __riscv_vle8_v_i8m2(input + i, vl);
+    vint8m2_t v_recurrent_raw = __riscv_vle8_v_i8m2(recurrent + i, vl);
+
+    vint16m4_t v_x_16 = __riscv_vwsub_vx_i16m4(v_input_raw, input_zp, vl);
+    vint16m4_t v_h_16 =
+        __riscv_vwsub_vx_i16m4(v_recurrent_raw, recurrent_zp, vl);
+
+    vint32m8_t v_x_32 = __riscv_vsext_vf2_i32m8(v_x_16, vl);
+    vint32m8_t v_h_32 = __riscv_vsext_vf2_i32m8(v_h_16, vl);
+
+    v_x_32 = VectorMultiplyByQuantizedMultiplier(
+        v_x_32, input_effective_scale_a, input_effective_scale_b, vl);
+    v_h_32 = VectorMultiplyByQuantizedMultiplier(
+        v_h_32, recurrent_effective_scale_a, recurrent_effective_scale_b, vl);
+
+    vint32m8_t v_y_32 = __riscv_vadd_vv_i32m8(v_x_32, v_h_32, vl);
+    vint16m4_t v_output_16 =
+        __riscv_vnclip_wx_i16m4(v_y_32, 0, __RISCV_VXRM_RNU, vl);
+
+    __riscv_vse16_v_i16m4(output + i, v_output_16, vl);
+
+    // 8. 滚轮推进
+    i += vl;
+    total_elements -= vl;
   }
 }
 } // namespace tensor_utils
