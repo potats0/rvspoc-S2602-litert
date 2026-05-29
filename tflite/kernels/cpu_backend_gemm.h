@@ -196,14 +196,17 @@ void Gemm(const MatrixParams<int8_t>& lhs_params, const int8_t* lhs_data,
     TFLITE_DCHECK(false);
     return;
   }
-fprintf(stderr, "==== aaaaa ====\n");
-  // Currently, only Ruy backend supports 16x8 quant gemm so we use ruy
-  // only.
+  #if defined (USE_RISCV)
+  GemmImpl<int8_t, int16_t, int32_t, int16_t,
+           quantization_flavor>::Run(lhs_params, lhs_data, rhs_params, rhs_data,
+                                     dst_params, dst_data, params, context);
+  #else
   detail::GemmImplUsingRuy<int8_t, int16_t, int32_t, int16_t,
                            quantization_flavor>::Run(lhs_params, lhs_data,
                                                      rhs_params, rhs_data,
                                                      dst_params, dst_data,
                                                      params, context);
+  #endif
 }
 
 // Special path for gemm with raw accumulator case. i.e. AccumScalar ==

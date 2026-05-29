@@ -588,6 +588,170 @@ struct GemmImplRISCV<std::uint8_t, std::uint8_t, AccuScalar, DstScalar,
   }
 };
 
+template <typename AccumScalar, QuantizationFlavor quantization_flavor>
+struct GemmImplRISCV<std::int8_t, std::int16_t, AccumScalar, std::int16_t,
+                     quantization_flavor> {
+  static void
+  Run(const MatrixParams<int8_t> &lhs_params, const int8_t *lhs_data,
+      const MatrixParams<int16_t> &rhs_params, const int16_t *rhs_data,
+      const MatrixParams<int16_t> &dst_params, int16_t *dst_data,
+      const GemmParams<AccumScalar, int16_t, quantization_flavor> &params,
+      CpuBackendContext *context) {
+    using Quantizer = RuyQuantizer<quantization_flavor, int16_t>;
+
+    std::unique_ptr<int8_t[]> lhs_buf;
+    const int8_t *final_lhs_data = lhs_data;
+
+    // 如果左矩阵是列优先，当然实际情况很低
+    if (lhs_params.order == Order::kColMajor) {
+      lhs_buf = TransposeColToRowMajor<int8_t>(lhs_data, lhs_params.rows,
+                                               lhs_params.cols);
+      final_lhs_data = lhs_buf.get();
+    }
+
+    const int16_t *final_rhs_data = rhs_data;
+    std::unique_ptr<int16_t[]> rhs_buf;
+
+    // 右矩阵如果是行优先（默认），就要弄成列优先，cache友好
+    if (rhs_params.order == Order::kRowMajor) {
+      rhs_buf = TransposeRowToColMajor<int16_t>(rhs_data, rhs_params.rows,
+                                                rhs_params.cols);
+      final_rhs_data = rhs_buf.get();
+    }
+    int M = lhs_params.rows;
+    int K = lhs_params.cols; // K 也是 rhs_params.rows (内积维度)
+    int N = rhs_params.cols;
+
+    size_t vlmax = __riscv_vsetvlmax_e8m2();
+    // 最外层循环：遍历右矩阵的每一列
+    for (int c = 0; c < N; ++c) {
+      const int16_t *rhs_col_ptr = final_rhs_data + c * K;
+      int r = 0;
+
+      for (; r <= M - RVV_MR; r += RVV_MR) {
+        int k_offset = 0;
+        int k_left = K;
+
+        vint32m8_t v_acc0 = __riscv_vmv_v_x_i32m8(0, vlmax);
+        vint32m8_t v_acc1 = __riscv_vmv_v_x_i32m8(0, vlmax);
+        vint32m8_t v_acc2 = __riscv_vmv_v_x_i32m8(0, vlmax);
+
+        const int8_t *lhs_row0 = final_lhs_data + (r + 0) * K;
+        const int8_t *lhs_row1 = final_lhs_data + (r + 1) * K;
+        const int8_t *lhs_row2 = final_lhs_data + (r + 2) * K;
+
+        while (k_left > 0) {
+          size_t vl = __riscv_vsetvl_e8m2(k_left);
+
+          // 按照行的元素个数处理，列是16位，行是8位
+          vint16m4_t v_rhs_col =
+              __riscv_vle16_v_i16m4(rhs_col_ptr + k_offset, vl);
+          v_rhs_col = __riscv_vsub_vx_i16m4(
+              v_rhs_col, static_cast<int16_t>(rhs_params.zero_point), vl);
+
+          // 第 1 行：load -> compute
+          vint8m2_t v_lhs_tmp = __riscv_vle8_v_i8m2(lhs_row0 + k_offset, vl);
+          vint16m4_t v_lhs_tmp_16 = __riscv_vsext_vf2_i16m4(v_lhs_tmp, vl);
+          v_lhs_tmp_16 = __riscv_vsub_vx_i16m4(
+              v_lhs_tmp_16, static_cast<int16_t>(lhs_params.zero_point), vl);
+          v_acc0 =
+              __riscv_vwmacc_vv_i32m8_tu(v_acc0, v_lhs_tmp_16, v_rhs_col, vl);
+
+          v_lhs_tmp = __riscv_vle8_v_i8m2(lhs_row1 + k_offset, vl);
+          v_lhs_tmp_16 = __riscv_vsext_vf2_i16m4(v_lhs_tmp, vl);
+          v_lhs_tmp_16 = __riscv_vsub_vx_i16m4(
+              v_lhs_tmp_16, static_cast<int16_t>(lhs_params.zero_point), vl);
+          v_acc1 =
+              __riscv_vwmacc_vv_i32m8_tu(v_acc1, v_lhs_tmp_16, v_rhs_col, vl);
+
+          // 第 3 行：再次复用 -> compute
+          v_lhs_tmp = __riscv_vle8_v_i8m2(lhs_row2 + k_offset, vl);
+          v_lhs_tmp_16 = __riscv_vsext_vf2_i16m4(v_lhs_tmp, vl);
+          v_lhs_tmp_16 = __riscv_vsub_vx_i16m4(
+              v_lhs_tmp_16, static_cast<int16_t>(lhs_params.zero_point), vl);
+          v_acc2 =
+              __riscv_vwmacc_vv_i32m8_tu(v_acc2, v_lhs_tmp_16, v_rhs_col, vl);
+
+          k_offset += vl;
+          k_left -= vl;
+        }
+
+        size_t vlmax_m1 = __riscv_vsetvlmax_e32m1();
+        vint32m1_t v_zero = __riscv_vmv_v_x_i32m1(0, vlmax_m1);
+
+        int32_t sum0 = __riscv_vmv_x_s_i32m1_i32(
+            __riscv_vredsum_vs_i32m8_i32m1(v_acc0, v_zero, vlmax));
+        int32_t sum1 = __riscv_vmv_x_s_i32m1_i32(
+            __riscv_vredsum_vs_i32m8_i32m1(v_acc1, v_zero, vlmax));
+        int32_t sum2 = __riscv_vmv_x_s_i32m1_i32(
+            __riscv_vredsum_vs_i32m8_i32m1(v_acc2, v_zero, vlmax));
+
+        if (params.bias) {
+          sum0 += params.bias[r + 0];
+          sum1 += params.bias[r + 1];
+          sum2 += params.bias[r + 2];
+        }
+
+        sum0 = Quantizer::Apply(sum0, r + 0, params, dst_params.zero_point);
+        sum1 = Quantizer::Apply(sum1, r + 1, params, dst_params.zero_point);
+        sum2 = Quantizer::Apply(sum2, r + 2, params, dst_params.zero_point);
+
+        if (dst_params.order == Order::kColMajor) {
+          dst_data[c * M + (r + 0)] = static_cast<int16_t>(sum0);
+          dst_data[c * M + (r + 1)] = static_cast<int16_t>(sum1);
+          dst_data[c * M + (r + 2)] = static_cast<int16_t>(sum2);
+        } else {
+          dst_data[(r + 0) * N + c] = static_cast<int16_t>(sum0);
+          dst_data[(r + 1) * N + c] = static_cast<int16_t>(sum1);
+          dst_data[(r + 2) * N + c] = static_cast<int16_t>(sum2);
+        }
+      }
+
+      for (; r < M; ++r) {
+        int k_offset = 0;
+        int k_left = K;
+        vint32m8_t v_acc = __riscv_vmv_v_x_i32m8(0, vlmax);
+        const int8_t *lhs_row_tail = final_lhs_data + r * K;
+
+        while (k_left > 0) {
+          size_t vl = __riscv_vsetvl_e8m2(k_left);
+          vint16m4_t v_rhs_col =
+              __riscv_vle16_v_i16m4(rhs_col_ptr + k_offset, vl);
+          v_rhs_col = __riscv_vsub_vx_i16m4(
+              v_rhs_col, static_cast<int16_t>(rhs_params.zero_point), vl);
+
+          vint8m2_t v_lhs_row =
+              __riscv_vle8_v_i8m2(lhs_row_tail + k_offset, vl);
+          vint16m4_t v_lhs_row_16 = __riscv_vsext_vf2_i16m4(v_lhs_row, vl);
+          v_lhs_row_16 = __riscv_vsub_vx_i16m4(
+              v_lhs_row_16, static_cast<int16_t>(lhs_params.zero_point), vl);
+          v_acc =
+              __riscv_vwmacc_vv_i32m8_tu(v_acc, v_rhs_col, v_lhs_row_16, vl);
+
+          k_offset += vl;
+          k_left -= vl;
+        }
+
+        size_t vlmax_m1 = __riscv_vsetvlmax_e32m1();
+        vint32m1_t v_zero = __riscv_vmv_v_x_i32m1(0, vlmax_m1);
+        int32_t sum = __riscv_vmv_x_s_i32m1_i32(
+            __riscv_vredsum_vs_i32m8_i32m1(v_acc, v_zero, vlmax));
+
+        if (params.bias)
+          sum += params.bias[r];
+
+        sum = Quantizer::Apply(sum, r, params, dst_params.zero_point);
+
+        if (dst_params.order == Order::kColMajor) {
+          dst_data[c * M + r] = static_cast<int16_t>(sum);
+        } else {
+          dst_data[r * N + c] = static_cast<int16_t>(sum);
+        }
+      }
+    }
+  }
+};
+
 // template <typename SrcScalar, QuantizationFlavor quantization_flavor>
 // struct GemmImplRISCV<SrcScalar, SrcScalar, std::int32_t, std::int8_t,
 //                      quantization_flavor>
