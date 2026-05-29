@@ -397,6 +397,7 @@ cc_library(
         "cpu_backend_gemm_eigen.h",
         "cpu_backend_gemm_gemmlowp.h",
         "cpu_backend_gemm_x86.h",
+        "cpu_backend_gemm_riscv.h"
     ],
     hdrs = [
         "cpu_backend_gemm.h",

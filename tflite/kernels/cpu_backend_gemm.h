@@ -23,6 +23,7 @@ limitations under the License.
 #include "tflite/kernels/cpu_backend_gemm_custom_gemv.h"
 #include "tflite/kernels/cpu_backend_gemm_params.h"
 #include "tflite/kernels/cpu_backend_gemm_ruy.h"
+#include "tflite/kernels/cpu_backend_gemm_riscv.h"
 
 #ifndef TFLITE_WITH_RUY
 #include "tflite/kernels/cpu_backend_gemm_eigen.h"
@@ -60,6 +61,11 @@ template <typename LhsScalar, typename RhsScalar, typename AccumScalar,
           typename DstScalar, QuantizationFlavor quantization_flavor>
 struct GemmImpl : detail::GemmImplX86<LhsScalar, RhsScalar, AccumScalar,
                                       DstScalar, quantization_flavor> {};
+#elif defined (USE_RISCV)
+template <typename LhsScalar, typename RhsScalar, typename AccumScalar,
+          typename DstScalar, QuantizationFlavor quantization_flavor>
+struct GemmImpl : detail::GemmImplRISCV<LhsScalar, RhsScalar, AccumScalar,
+                                           DstScalar, quantization_flavor> {};
 #else
 /* Generic implementation using ruy.
  * Non-ruy implementation will be partial specializations of this template.
@@ -132,6 +138,8 @@ void Gemm(const MatrixParams<LhsScalar>& lhs_params, const LhsScalar* lhs_data,
   }
   // In some cases we want to unconditionally use ruy as the backend, overriding
   // the `tflite_with_ruy` setting and the platform default.
+  // 说实话，因为其他语言没有Riscv这么方便，所以搞出一堆奇怪的东西
+  #ifndef USE_RISCV
   bool must_use_ruy = false;
   if (context->use_caching()) {
     // Only ruy supports caching of pre-packed matrices. Due to the large
@@ -168,6 +176,7 @@ void Gemm(const MatrixParams<LhsScalar>& lhs_params, const LhsScalar* lhs_data,
       return;
     }
   }
+  #endif
   // Generic case: dispatch to any backend as a general GEMM.
   GemmImpl<LhsScalar, RhsScalar, AccumScalar, DstScalar,
            quantization_flavor>::Run(lhs_params, lhs_data, rhs_params, rhs_data,
@@ -187,7 +196,7 @@ void Gemm(const MatrixParams<int8_t>& lhs_params, const int8_t* lhs_data,
     TFLITE_DCHECK(false);
     return;
   }
-
+fprintf(stderr, "==== aaaaa ====\n");
   // Currently, only Ruy backend supports 16x8 quant gemm so we use ruy
   // only.
   detail::GemmImplUsingRuy<int8_t, int16_t, int32_t, int16_t,
